@@ -402,7 +402,10 @@
     <div class="card" style="border-color:var(--danger);">
       <h2 style="color:var(--danger);">Vùng nguy hiểm</h2>
       <p class="hint">Xóa vĩnh viễn toàn bộ lịch sử giao dịch đang lưu trên máy này. Khách hàng, hàng hóa, viết tắt, khóa API và cài đặt đồng bộ được giữ nguyên. Nếu đang bật tự động đồng bộ, lịch sử trên đám mây cũng sẽ bị xóa theo. <b>Không thể hoàn tác</b> — hãy tải bản sao lưu trước nếu chưa chắc chắn.</p>
-      <button class="btn" id="btn-wipe-all" style="background:var(--danger); color:#fff;">Xóa toàn bộ lịch sử trên máy này</button>
+      <div class="row-flex">
+        <input type="text" id="wipe-confirm" placeholder="Gõ XOA để xác nhận" autocomplete="off" autocapitalize="characters" style="width:170px;">
+        <button class="btn" id="btn-wipe-all" style="background:var(--danger); color:#fff;">Xóa toàn bộ lịch sử trên máy này</button>
+      </div>
       <div class="status-line" id="wipe-status"></div>
     </div>
   </section>
@@ -1330,14 +1333,19 @@ window.delHistory = delHistory; window.toggleHistoryPaid = toggleHistoryPaid;
 //  XÓA TOÀN BỘ LỊCH SỬ GIAO DỊCH (giữ danh mục, khóa API, cài đặt đồng bộ)
 // =====================================================================
 $('btn-wipe-all').addEventListener('click', async ()=>{
-  if(!confirm('XÓA VĨNH VIỄN toàn bộ lịch sử giao dịch ('+history.length+' dòng) trên máy này. Khách hàng, hàng hóa, khóa API và cài đặt đồng bộ vẫn được giữ. Không thể hoàn tác. Bạn có chắc chắn?')) return;
-  const typed = prompt('Để xác nhận, gõ chữ XOA (viết hoa, không dấu) vào ô bên dưới rồi bấm OK:');
-  if(typed !== 'XOA'){ setStatus('wipe-status', 'Đã hủy — không xóa gì cả.'); return; }
+  // Không dùng prompt()/confirm(): nhiều trình duyệt trên điện thoại (app đã cài, trình duyệt trong Zalo/Facebook…) chặn hộp thoại này
+  const typed = stripAccents($('wipe-confirm').value).trim().toUpperCase();
+  if(typed !== 'XOA'){
+    setStatus('wipe-status', 'Gõ chữ XOA vào ô bên cạnh rồi bấm lại nút để xóa toàn bộ '+history.length+' dòng lịch sử.', 'err');
+    $('wipe-confirm').focus(); return;
+  }
   try{
+    const n = history.length;
     history=[];
     await persist('transactions');
     renderHistory();
-    setStatus('wipe-status', 'Đã xóa toàn bộ lịch sử giao dịch trên máy này.', 'ok');
+    $('wipe-confirm').value = '';
+    setStatus('wipe-status', 'Đã xóa toàn bộ '+n+' dòng lịch sử giao dịch trên máy này.', 'ok');
   }catch(e){ setStatus('wipe-status', 'Có lỗi khi xóa: '+(e.message||e), 'err'); }
 });
 
