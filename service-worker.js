@@ -1,6 +1,6 @@
-// Service worker của "Sổ Bán Hàng" — chỉ cache giao diện (app shell) để mở được cả khi mất mạng.
+// Service worker của "Nhập sổ bán hàng" — chỉ cache giao diện (app shell) để mở được cả khi mất mạng.
 // Việc đọc ảnh bằng AI vẫn cần Internet vì phải gọi tới máy chủ Gemini/OpenAI/Anthropic.
-const CACHE_NAME = 'so-ban-hang-v1';
+const CACHE_NAME = 'so-ban-hang-v2';
 const SHELL_FILES = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (event) => {
