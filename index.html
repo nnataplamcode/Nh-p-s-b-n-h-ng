@@ -297,7 +297,7 @@
       </div>
       <div class="tablewrap">
         <table>
-          <thead><tr><th>Mã hàng</th><th>Tên hàng</th><th>Tổng SL</th><th>Tổng thành tiền</th><th>Đã thanh toán</th><th>Còn nợ</th><th>Số lượt bán</th></tr></thead>
+          <thead><tr><th style="width:28px;"><input type="checkbox" id="summary-check-all" title="Chọn / bỏ chọn tất cả"></th><th>Mã hàng</th><th>Tên hàng</th><th>Tổng SL</th><th>Tổng thành tiền</th><th>Đã thanh toán</th><th>Còn nợ</th><th>Số lượt bán</th></tr></thead>
           <tbody id="summary-body"></tbody>
         </table>
       </div>
@@ -1241,33 +1241,58 @@ function computeSummary(){
     const ten = r.ten_hang||'(chưa rõ tên hàng)', key=(r.ma_hang||'')+'||'+ten;
     if(!groups[key]) groups[key] = {ma_hang:r.ma_hang||'', ten_hang:ten, sl:0, thanh_tien:0, da_tt:0, con_no:0, luot:0};
     const tien = Number(r.thanh_tien)||0;
+    groups[key].key = key;
     groups[key].sl += Number(r.sl)||0; groups[key].thanh_tien += tien; groups[key].luot++;
     if(r.thanh_toan==='da_thanh_toan') groups[key].da_tt += tien; else groups[key].con_no += tien;
   });
   return Object.values(groups).sort((a,b)=>b.thanh_tien-a.thanh_tien);
 }
+// Các mặt hàng đang được đánh dấu trong bảng tổng hợp (giữ nguyên khi đổi ngày / vẽ lại)
+const summaryChecked = new Set();
+// Có chọn ít nhất 1 dòng đang hiện thì chỉ lấy các dòng đã chọn, không thì lấy tất cả
+function summaryRowsForOutput(){
+  const rows = computeSummary(), sel = rows.filter(g=>summaryChecked.has(g.key));
+  return sel.length ? sel : rows;
+}
+function toggleSummaryRow(key, on){ on ? summaryChecked.add(key) : summaryChecked.delete(key); renderSummary(); }
+window.toggleSummaryRow = toggleSummaryRow;
+$('summary-check-all').addEventListener('change', e=>{
+  computeSummary().forEach(g=>e.target.checked ? summaryChecked.add(g.key) : summaryChecked.delete(g.key));
+  renderSummary();
+});
 function renderSummary(){
   const rows = computeSummary();
-  $('summary-body').innerHTML = rows.map(g=>`
-    <tr><td>${esc(g.ma_hang)}</td><td>${esc(g.ten_hang)}</td>
+  $('summary-body').innerHTML = rows.map((g,i)=>`
+    <tr${summaryChecked.has(g.key)?' style="background:var(--paid-bg);"':''}>
+    <td><input type="checkbox" data-i="${i}" ${summaryChecked.has(g.key)?'checked':''}></td>
+    <td>${esc(g.ma_hang)}</td><td>${esc(g.ten_hang)}</td>
     <td class="num">${fmtVN(g.sl)}</td><td class="num">${fmtVN(g.thanh_tien)}</td>
     <td class="num">${fmtVN(g.da_tt)}</td><td class="num">${fmtVN(g.con_no)}</td><td class="num">${g.luot}</td></tr>
-  `).join('') || emptyRow(7);
+  `).join('') || emptyRow(8);
+  $('summary-body').querySelectorAll('input[type=checkbox]').forEach(cb=>
+    cb.addEventListener('change', ()=>toggleSummaryRow(rows[cb.dataset.i].key, cb.checked)));
+  const sel = rows.filter(g=>summaryChecked.has(g.key)), all = $('summary-check-all');
+  all.checked = rows.length>0 && sel.length===rows.length;
+  all.indeterminate = sel.length>0 && sel.length<rows.length;
   $('summary-total').innerHTML =
     `<div>Tổng số lượng: <b>${fmtVN(rows.reduce((s,g)=>s+g.sl,0))}</b></div>
      <div>Tổng thành tiền: <b>${fmtVN(rows.reduce((s,g)=>s+g.thanh_tien,0))}</b></div>
      <div>Đã thanh toán: <b>${fmtVN(rows.reduce((s,g)=>s+g.da_tt,0))}</b></div>
      <div>Còn nợ: <b>${fmtVN(rows.reduce((s,g)=>s+g.con_no,0))}</b></div>
-     <div>Số mặt hàng: <b>${rows.length}</b></div>`;
+     <div>Số mặt hàng: <b>${rows.length}</b></div>` +
+    (sel.length ? `<div style="flex-basis:100%;">Đã chọn <b>${sel.length}</b> mặt hàng — SL: <b>${fmtVN(sel.reduce((s,g)=>s+g.sl,0))}</b>,
+      thành tiền: <b>${fmtVN(sel.reduce((s,g)=>s+g.thanh_tien,0))}</b>,
+      đã thanh toán: <b>${fmtVN(sel.reduce((s,g)=>s+g.da_tt,0))}</b>,
+      còn nợ: <b>${fmtVN(sel.reduce((s,g)=>s+g.con_no,0))}</b>. Xuất Excel / Copy sẽ chỉ lấy các dòng đã chọn.</div>` : '');
 }
 $('btn-export-summary').addEventListener('click', ()=>{
-  const rows = computeSummary(); if(rows.length===0) return;
+  const rows = summaryRowsForOutput(); if(rows.length===0) return;
   const label = $('summary-all-dates').checked ? 'tat-ca' : ($('summary-date').value || todayISO());
   exportSheet(rows.map(g=>({'Mã hàng':g.ma_hang,'Tên hàng':g.ten_hang,'Tổng SL':g.sl,'Tổng thành tiền':g.thanh_tien,'Đã thanh toán':g.da_tt,'Còn nợ':g.con_no,'Số lượt bán':g.luot})),
     [{wch:10},{wch:24},{wch:10},{wch:14},{wch:14},{wch:14},{wch:12}], 'TongHop', 'tong-hop-ban-le-'+label+'.xlsx');
 });
 $('btn-copy-summary').addEventListener('click', ()=>{
-  const rows = computeSummary();
+  const rows = summaryRowsForOutput();
   const data = rows.map(g=>({'Mã hàng':g.ma_hang,'Tên hàng':g.ten_hang,'Tổng SL':g.sl,'Tổng thành tiền':g.thanh_tien,'Đã thanh toán':g.da_tt,'Còn nợ':g.con_no,'Số lượt bán':g.luot}));
   copyText(toTSV(data), 'summary-copy-status');
 });
