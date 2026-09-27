@@ -508,6 +508,19 @@ function todayISO(){ const d=new Date(); d.setMinutes(d.getMinutes()-d.getTimezo
 function esc(s){ return (s??'').toString().replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 function emptyRow(cols, text){ return `<tr><td colspan="${cols}" class="empty">${text||'Chưa có dữ liệu'}</td></tr>`; }
 function stripAccents(s){ return String(s??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/Đ/g,'D'); }
+// Đưa ngày về dạng YYYY-MM-DD (chấp nhận 2026-9-4, 04/09/2026, 4-9-2026, có kèm giờ…)
+function normDate(s){
+  const t = String(s??'').trim(); let m;
+  if((m = t.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/))) return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+  if((m = t.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})/))) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+  return t;
+}
+// Nhận diện "đã thanh toán" kể cả khi viết không dấu / khác kiểu gõ Unicode
+function isPaidText(s){
+  const t = stripAccents(s).toLowerCase().trim();
+  if(/chua|con no|con_no|\bno\b/.test(t)) return false;
+  return /da[ _]*(thanh|tra|tt)|paid|^da$|^roi$|^x$|^✓$/.test(t);
+}
 function setStatus(id, text, kind){ const el=$(id); el.textContent=text; el.className='status-line'+(kind?' '+kind:''); }
 
 const COLS = {customers:()=>customers, products:()=>products, abbrs:()=>abbrs, transactions:()=>history};
@@ -836,14 +849,13 @@ function enrichRow(r){
 }
 
 function normalizeRow(r, date){
-  const tt = String(r.thanh_toan||'').toLowerCase();
   return enrichRow({
     _id: 'r'+uid(),
-    ngay: r.ngay || date,
+    ngay: normDate(r.ngay) || date,
     ma_kh: r.ma_kh || '', ten_kh: r.ten_kh || '',
     ma_hang: r.ma_hang || '', ten_hang: r.ten_hang || '',
     sl: r.sl ?? '', don_gia: r.don_gia ?? '', thanh_tien: r.thanh_tien ?? '',
-    thanh_toan: (tt.includes('da_thanh') || tt.includes('đã') || tt==='paid') ? 'da_thanh_toan' : 'con_no',
+    thanh_toan: isPaidText(r.thanh_toan) ? 'da_thanh_toan' : 'con_no',
     ghi_chu: r.ghi_chu || ''
   });
 }
@@ -1013,7 +1025,7 @@ $('btn-clear-staging').addEventListener('click', ()=>{
 $('btn-save').addEventListener('click', async ()=>{
   if(stagingRows.length===0){ setStatus('save-status','Chưa có dòng nào để lưu.','err'); return; }
   const n = stagingRows.length;
-  stagingRows.forEach(r=>{ const {_id, ...data} = r; history.push({id:uid(), ...data, created_at:Date.now()}); });
+  stagingRows.forEach(r=>{ const {_id, ...data} = r; history.push({id:uid(), ...data, ngay:normDate(data.ngay), created_at:Date.now()}); });
   try{
     await persist('transactions');
     stagingRows = []; renderStaging(); renderHistory();
@@ -1221,7 +1233,7 @@ $('summary-all-dates').addEventListener('change', e=>{ $('summary-date').disable
 function computeSummary(){
   const allDates = $('summary-all-dates').checked, date = $('summary-date').value;
   const groups = {};
-  history.filter(r=>r.thanh_toan==='da_thanh_toan' && (allDates || r.ngay===date)).forEach(r=>{
+  history.filter(r=>r.thanh_toan==='da_thanh_toan' && (allDates || normDate(r.ngay)===date)).forEach(r=>{
     const ten = r.ten_hang||'(chưa rõ tên hàng)', key=(r.ma_hang||'')+'||'+ten;
     if(!groups[key]) groups[key] = {ma_hang:r.ma_hang||'', ten_hang:ten, sl:0, thanh_tien:0, luot:0};
     groups[key].sl += Number(r.sl)||0; groups[key].thanh_tien += Number(r.thanh_tien)||0; groups[key].luot++;
@@ -1238,6 +1250,12 @@ function renderSummary(){
     `<div>Tổng số lượng: <b>${fmtVN(rows.reduce((s,g)=>s+g.sl,0))}</b></div>
      <div>Tổng thành tiền: <b>${fmtVN(rows.reduce((s,g)=>s+g.thanh_tien,0))}</b></div>
      <div>Số mặt hàng: <b>${rows.length}</b></div>`;
+  const allDates = $('summary-all-dates').checked, date = $('summary-date').value;
+  const unpaid = history.filter(r=>r.thanh_toan!=='da_thanh_toan' && (allDates || normDate(r.ngay)===date));
+  if(unpaid.length){
+    const names = [...new Set(unpaid.map(r=>r.ten_hang||'(chưa rõ tên hàng)'))];
+    $('summary-total').innerHTML += `<div style="flex-basis:100%;">Không tính ${unpaid.length} dòng còn nợ (${fmtVN(unpaid.reduce((s,r)=>s+(Number(r.thanh_tien)||0),0))}đ): ${esc(names.join(', '))} — bấm nút trạng thái trong Lịch sử để đổi thành "Đã thanh toán" nếu cần.</div>`;
+  }
 }
 $('btn-export-summary').addEventListener('click', ()=>{
   const rows = computeSummary(); if(rows.length===0) return;
