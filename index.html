@@ -646,8 +646,10 @@ async function callAIOnce(s, prompt, images){
     const msg = body?.error?.message || ('mã lỗi '+resp.status);
     let err;
     const errAll = JSON.stringify(body?.error||'');
-    if(resp.status===400 && gemThinking(s) && /thinking/i.test(msg)){
-      // Mô hình không hỗ trợ tắt thinking → gửi lại một lần không kèm tùy chọn đó.
+    if(resp.status===400 && gemThinking(s)){
+      // Một số mô hình không nhận tùy chọn tắt thinking và chỉ báo chung chung "Request contains an invalid
+      // argument" → gửi lại một lần không kèm tùy chọn đó, và nhớ lại để lần sau không gửi nữa.
+      noThinkModels.add(s.model);
       return callAIOnce(Object.assign({}, s, {_noThinkingCfg:true}), prompt, images);
     }
     if(resp.status===401 || resp.status===403 || /API key/i.test(msg)) err = new Error('Khóa API không hợp lệ hoặc không có quyền: '+msg);
@@ -682,7 +684,7 @@ async function callAIOnce(s, prompt, images){
     if(err.retryable===undefined) err.retryable = false;
     // Các lỗi chỉ liên quan tới RIÊNG mô hình này (quá tải, hết lượt của mô hình, không tìm thấy mô hình)
     // → có thể chuyển sang mô hình dự phòng. Lỗi khóa API / chưa nạp tiền thì đổi mô hình cũng vô ích.
-    err.canSwitch = resp.status===404 || resp.status===429 || resp.status===503 || resp.status===529 || /overload|high demand|UNAVAILABLE/i.test(msg);
+    err.canSwitch = resp.status===404 || (resp.status===400 && /INVALID_ARGUMENT|invalid argument/i.test(errAll)) || resp.status===429 || resp.status===503 || resp.status===529 || /overload|high demand|UNAVAILABLE/i.test(msg);
     if(/Tài khoản API chưa có tiền/.test(err.message)) err.canSwitch = false;
     throw err;
   }
@@ -703,7 +705,8 @@ async function callAIOnce(s, prompt, images){
 }
 
 let lastUsage = null;   // số token của lượt gọi AI gần nhất (để hiện cho người dùng)
-function gemThinking(s){ return s.provider!=='anthropic' && s.provider!=='openai' && !s._noThinkingCfg && !/pro/i.test(s.model); }
+const noThinkModels = new Set();   // mô hình Gemini đã từng từ chối tùy chọn tắt thinking
+function gemThinking(s){ return s.provider!=='anthropic' && s.provider!=='openai' && !s._noThinkingCfg && !/pro/i.test(s.model) && !noThinkModels.has(s.model); }
 
 // Tự động thử lại khi máy chủ AI báo quá tải (503) hoặc hết lượt dùng tạm thời (429).
 // Với 429 chỉ thử lại 1 lần, vì mỗi lần thử lại cũng bị tính vào hạn mức lượt gọi.
