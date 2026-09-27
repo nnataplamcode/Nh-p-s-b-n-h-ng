@@ -294,6 +294,8 @@
         </label>
         <button class="btn ghost" id="btn-export-summary">Xuất Excel tổng hợp</button>
         <button class="btn ghost" id="btn-copy-summary">Copy tổng hợp</button>
+        <button class="btn ghost" id="btn-merge-summary" title="Gộp các mặt hàng đã tích chọn thành 1 dòng">Gộp dòng đã chọn</button>
+        <button class="btn ghost" id="btn-undo-merge" style="display:none;">Hoàn tác gộp</button>
       </div>
       <div class="tablewrap">
         <table>
@@ -302,6 +304,7 @@
         </table>
       </div>
       <div class="status-line" id="summary-copy-status"></div>
+      <div class="status-line" id="summary-merge-status"></div>
       <footer class="summary" id="summary-total"></footer>
     </div>
 
@@ -1241,7 +1244,7 @@ function computeSummary(){
     const ten = r.ten_hang||'(chưa rõ tên hàng)', key=(r.ma_hang||'')+'||'+ten;
     if(!groups[key]) groups[key] = {ma_hang:r.ma_hang||'', ten_hang:ten, sl:0, thanh_tien:0, da_tt:0, con_no:0, luot:0};
     const tien = Number(r.thanh_tien)||0;
-    groups[key].key = key;
+    groups[key].key = key; (groups[key].ids ||= []).push(r.id);
     groups[key].sl += Number(r.sl)||0; groups[key].thanh_tien += tien; groups[key].luot++;
     if(r.thanh_toan==='da_thanh_toan') groups[key].da_tt += tien; else groups[key].con_no += tien;
   });
@@ -1259,6 +1262,34 @@ window.toggleSummaryRow = toggleSummaryRow;
 $('summary-check-all').addEventListener('change', e=>{
   computeSummary().forEach(g=>e.target.checked ? summaryChecked.add(g.key) : summaryChecked.delete(g.key));
   renderSummary();
+});
+// Gộp: đổi mã hàng / tên hàng của các giao dịch thuộc những dòng đã chọn
+// theo dòng có tổng SL lớn nhất (bằng nhau thì lấy dòng thành tiền lớn hơn).
+// Chỉ áp dụng cho các giao dịch đang nằm trong bảng (theo ngày đang chọn).
+let lastMerge = null;
+$('btn-merge-summary').addEventListener('click', async ()=>{
+  const sel = computeSummary().filter(g=>summaryChecked.has(g.key));
+  if(sel.length<2){ setStatus('summary-merge-status','Hãy tích chọn ít nhất 2 dòng để gộp.','err'); return; }
+  const target = sel.slice().sort((a,b)=>b.sl-a.sl || b.thanh_tien-a.thanh_tien)[0];
+  const others = sel.filter(g=>g!==target);
+  const ids = new Set(others.flatMap(g=>g.ids));
+  const backup = [];
+  history.forEach(r=>{ if(ids.has(r.id)){ backup.push({id:r.id, ma_hang:r.ma_hang, ten_hang:r.ten_hang}); r.ma_hang = target.ma_hang; r.ten_hang = target.ten_hang; } });
+  lastMerge = backup;
+  sel.forEach(g=>summaryChecked.delete(g.key));
+  try{
+    await persist('transactions'); renderHistory();
+    $('btn-undo-merge').style.display = '';
+    setStatus('summary-merge-status', `Đã gộp ${others.map(g=>'"'+g.ten_hang+'"').join(', ')} vào "${target.ten_hang}" (${backup.length} giao dịch được đổi tên hàng).`, 'ok');
+  }catch(e){ setStatus('summary-merge-status','Lỗi khi lưu: '+(e.message||e),'err'); }
+});
+$('btn-undo-merge').addEventListener('click', async ()=>{
+  if(!lastMerge) return;
+  const byId = new Map(lastMerge.map(b=>[b.id,b]));
+  history.forEach(r=>{ const b = byId.get(r.id); if(b){ r.ma_hang = b.ma_hang; r.ten_hang = b.ten_hang; } });
+  lastMerge = null; $('btn-undo-merge').style.display = 'none';
+  try{ await persist('transactions'); renderHistory(); setStatus('summary-merge-status','Đã hoàn tác lần gộp vừa rồi.','ok'); }
+  catch(e){ setStatus('summary-merge-status','Lỗi khi lưu: '+(e.message||e),'err'); }
 });
 function renderSummary(){
   const rows = computeSummary();
