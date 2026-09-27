@@ -1,11 +1,19 @@
-// Service worker của "Nhập sổ bán hàng" — chỉ cache giao diện (app shell) để mở được cả khi mất mạng.
+// Service worker của "Nhập sổ bán hàng" — cache giao diện (app shell) để mở được cả khi mất mạng.
 // Việc đọc ảnh bằng AI vẫn cần Internet vì phải gọi tới máy chủ Gemini/OpenAI/Anthropic.
-const CACHE_NAME = 'so-ban-hang-v2';
+// Ưu tiên mạng: khi có Internet luôn tải bản mới nhất (tránh chạy mã cũ sau khi cập nhật),
+// chỉ dùng bản đã lưu khi mất mạng.
+const CACHE_NAME = 'so-ban-hang-v3';
 const SHELL_FILES = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_FILES)).catch(()=>{})
+    caches.open(CACHE_NAME)
+      .then((cache) => Promise.all(SHELL_FILES.map((f) =>
+        // cache: 'reload' để bỏ qua bộ nhớ đệm HTTP của trình duyệt, lấy đúng bản mới trên máy chủ.
+        fetch(new Request(f, { cache: 'reload' }))
+          .then((resp) => { if (resp.ok) return cache.put(f, resp); })
+          .catch(() => {})
+      )))
   );
   self.skipWaiting();
 });
@@ -25,17 +33,14 @@ self.addEventListener('fetch', (event) => {
   // (Gemini/OpenAI/Anthropic) đi thẳng ra mạng như bình thường, không qua cache.
   if (url.origin !== self.location.origin || event.request.method !== 'GET') return;
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const network = fetch(event.request)
-        .then((resp) => {
-          if (resp && resp.ok) {
-            const copy = resp.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-          }
-          return resp;
-        })
-        .catch(() => cached);
-      return cached || network;
-    })
+    fetch(event.request, { cache: 'no-cache' })
+      .then((resp) => {
+        if (resp && resp.ok) {
+          const copy = resp.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        }
+        return resp;
+      })
+      .catch(() => caches.match(event.request).then((cached) => cached || caches.match('./index.html')))
   );
 });
