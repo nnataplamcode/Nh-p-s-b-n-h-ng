@@ -2,7 +2,7 @@
 // Việc đọc ảnh bằng AI vẫn cần Internet vì phải gọi tới máy chủ Gemini/OpenAI/Anthropic.
 // Ưu tiên mạng: khi có Internet luôn tải bản mới nhất (tránh chạy mã cũ sau khi cập nhật),
 // chỉ dùng bản đã lưu khi mất mạng.
-const CACHE_NAME = 'so-ban-hang-v4';
+const CACHE_NAME = 'so-ban-hang-v5';
 const SHELL_FILES = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (event) => {

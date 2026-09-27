@@ -285,8 +285,8 @@
   <!-- TAB: LỊCH SỬ -->
   <section class="tab" id="tab-lichsu">
     <div class="card">
-      <h2>Tổng hợp bán lẻ đã thanh toán</h2>
-      <p class="hint">Chỉ tính các dòng đã thanh toán (không tính khách còn nợ), gộp theo mặt hàng.</p>
+      <h2>Tổng hợp bán lẻ</h2>
+      <p class="hint">Tính tất cả các dòng (cả đã thanh toán và còn nợ), gộp theo mặt hàng.</p>
       <div class="row-flex" style="margin-bottom:10px;">
         <label style="font-size:13px; color:var(--ink-dim);">Ngày &nbsp;<input type="date" id="summary-date"></label>
         <label style="font-size:13px; color:var(--ink-dim); display:flex; align-items:center; gap:5px;">
@@ -297,7 +297,7 @@
       </div>
       <div class="tablewrap">
         <table>
-          <thead><tr><th>Mã hàng</th><th>Tên hàng</th><th>Tổng SL</th><th>Tổng thành tiền</th><th>Số lượt bán</th></tr></thead>
+          <thead><tr><th>Mã hàng</th><th>Tên hàng</th><th>Tổng SL</th><th>Tổng thành tiền</th><th>Đã thanh toán</th><th>Còn nợ</th><th>Số lượt bán</th></tr></thead>
           <tbody id="summary-body"></tbody>
         </table>
       </div>
@@ -309,6 +309,7 @@
       <h2>Toàn bộ giao dịch đã lưu</h2>
       <div class="row-flex" style="margin-bottom:10px;">
         <input type="text" id="history-filter" placeholder="Tìm theo tên khách, tên hàng, ngày…" style="flex:1; min-width:180px;">
+        <select id="history-product" title="Lọc theo mặt hàng"><option value="">Tất cả mặt hàng</option></select>
         <button class="btn ghost" id="btn-export-all">Xuất Excel toàn bộ</button>
         <button class="btn ghost" id="btn-copy-all">Copy toàn bộ</button>
       </div>
@@ -1233,10 +1234,12 @@ $('summary-all-dates').addEventListener('change', e=>{ $('summary-date').disable
 function computeSummary(){
   const allDates = $('summary-all-dates').checked, date = $('summary-date').value;
   const groups = {};
-  history.filter(r=>r.thanh_toan==='da_thanh_toan' && (allDates || normDate(r.ngay)===date)).forEach(r=>{
+  history.filter(r=>allDates || normDate(r.ngay)===date).forEach(r=>{
     const ten = r.ten_hang||'(chưa rõ tên hàng)', key=(r.ma_hang||'')+'||'+ten;
-    if(!groups[key]) groups[key] = {ma_hang:r.ma_hang||'', ten_hang:ten, sl:0, thanh_tien:0, luot:0};
-    groups[key].sl += Number(r.sl)||0; groups[key].thanh_tien += Number(r.thanh_tien)||0; groups[key].luot++;
+    if(!groups[key]) groups[key] = {ma_hang:r.ma_hang||'', ten_hang:ten, sl:0, thanh_tien:0, da_tt:0, con_no:0, luot:0};
+    const tien = Number(r.thanh_tien)||0;
+    groups[key].sl += Number(r.sl)||0; groups[key].thanh_tien += tien; groups[key].luot++;
+    if(r.thanh_toan==='da_thanh_toan') groups[key].da_tt += tien; else groups[key].con_no += tien;
   });
   return Object.values(groups).sort((a,b)=>b.thanh_tien-a.thanh_tien);
 }
@@ -1244,28 +1247,25 @@ function renderSummary(){
   const rows = computeSummary();
   $('summary-body').innerHTML = rows.map(g=>`
     <tr><td>${esc(g.ma_hang)}</td><td>${esc(g.ten_hang)}</td>
-    <td class="num">${fmtVN(g.sl)}</td><td class="num">${fmtVN(g.thanh_tien)}</td><td class="num">${g.luot}</td></tr>
-  `).join('') || emptyRow(5);
+    <td class="num">${fmtVN(g.sl)}</td><td class="num">${fmtVN(g.thanh_tien)}</td>
+    <td class="num">${fmtVN(g.da_tt)}</td><td class="num">${fmtVN(g.con_no)}</td><td class="num">${g.luot}</td></tr>
+  `).join('') || emptyRow(7);
   $('summary-total').innerHTML =
     `<div>Tổng số lượng: <b>${fmtVN(rows.reduce((s,g)=>s+g.sl,0))}</b></div>
      <div>Tổng thành tiền: <b>${fmtVN(rows.reduce((s,g)=>s+g.thanh_tien,0))}</b></div>
+     <div>Đã thanh toán: <b>${fmtVN(rows.reduce((s,g)=>s+g.da_tt,0))}</b></div>
+     <div>Còn nợ: <b>${fmtVN(rows.reduce((s,g)=>s+g.con_no,0))}</b></div>
      <div>Số mặt hàng: <b>${rows.length}</b></div>`;
-  const allDates = $('summary-all-dates').checked, date = $('summary-date').value;
-  const unpaid = history.filter(r=>r.thanh_toan!=='da_thanh_toan' && (allDates || normDate(r.ngay)===date));
-  if(unpaid.length){
-    const names = [...new Set(unpaid.map(r=>r.ten_hang||'(chưa rõ tên hàng)'))];
-    $('summary-total').innerHTML += `<div style="flex-basis:100%;">Không tính ${unpaid.length} dòng còn nợ (${fmtVN(unpaid.reduce((s,r)=>s+(Number(r.thanh_tien)||0),0))}đ): ${esc(names.join(', '))} — bấm nút trạng thái trong Lịch sử để đổi thành "Đã thanh toán" nếu cần.</div>`;
-  }
 }
 $('btn-export-summary').addEventListener('click', ()=>{
   const rows = computeSummary(); if(rows.length===0) return;
   const label = $('summary-all-dates').checked ? 'tat-ca' : ($('summary-date').value || todayISO());
-  exportSheet(rows.map(g=>({'Mã hàng':g.ma_hang,'Tên hàng':g.ten_hang,'Tổng SL':g.sl,'Tổng thành tiền':g.thanh_tien,'Số lượt bán':g.luot})),
-    [{wch:10},{wch:24},{wch:10},{wch:14},{wch:12}], 'TongHop', 'tong-hop-ban-le-'+label+'.xlsx');
+  exportSheet(rows.map(g=>({'Mã hàng':g.ma_hang,'Tên hàng':g.ten_hang,'Tổng SL':g.sl,'Tổng thành tiền':g.thanh_tien,'Đã thanh toán':g.da_tt,'Còn nợ':g.con_no,'Số lượt bán':g.luot})),
+    [{wch:10},{wch:24},{wch:10},{wch:14},{wch:14},{wch:14},{wch:12}], 'TongHop', 'tong-hop-ban-le-'+label+'.xlsx');
 });
 $('btn-copy-summary').addEventListener('click', ()=>{
   const rows = computeSummary();
-  const data = rows.map(g=>({'Mã hàng':g.ma_hang,'Tên hàng':g.ten_hang,'Tổng SL':g.sl,'Tổng thành tiền':g.thanh_tien,'Số lượt bán':g.luot}));
+  const data = rows.map(g=>({'Mã hàng':g.ma_hang,'Tên hàng':g.ten_hang,'Tổng SL':g.sl,'Tổng thành tiền':g.thanh_tien,'Đã thanh toán':g.da_tt,'Còn nợ':g.con_no,'Số lượt bán':g.luot}));
   copyText(toTSV(data), 'summary-copy-status');
 });
 
@@ -1273,14 +1273,28 @@ function sortedHistory(){
   return history.slice().sort((a,b)=> (b.ngay||'').localeCompare(a.ngay||'') || (b.created_at||0)-(a.created_at||0));
 }
 $('history-filter').addEventListener('input', renderHistory);
+$('history-product').addEventListener('change', renderHistory);
+function productKey(r){ return stripAccents(r.ten_hang||'').toLowerCase().trim() || '(chưa rõ tên hàng)'; }
+// Danh sách mặt hàng trong ô lọc lấy từ chính các giao dịch đã lưu
+function refreshProductFilter(){
+  const sel = $('history-product'), cur = sel.value, names = {};
+  history.forEach(r=>{ const k = productKey(r); if(!names[k]) names[k] = r.ten_hang || '(chưa rõ tên hàng)'; });
+  const keys = Object.keys(names).sort((a,b)=>names[a].localeCompare(names[b],'vi'));
+  sel.innerHTML = '<option value="">Tất cả mặt hàng</option>' +
+    keys.map(k=>`<option value="${esc(k)}">${esc(names[k])}</option>`).join('');
+  sel.value = keys.includes(cur) ? cur : '';
+}
 function currentFilteredHistory(){
   const q = stripAccents($('history-filter').value).toLowerCase().trim();
-  return sortedHistory().filter(r=>!q || stripAccents([r.ngay,r.ma_kh,r.ten_kh,r.ma_hang,r.ten_hang,r.ghi_chu].join(' ')).toLowerCase().includes(q));
+  const prod = $('history-product').value;
+  return sortedHistory().filter(r=>(!prod || productKey(r)===prod) &&
+    (!q || stripAccents([r.ngay,r.ma_kh,r.ten_kh,r.ma_hang,r.ten_hang,r.ghi_chu].join(' ')).toLowerCase().includes(q)));
 }
 $('btn-copy-all').addEventListener('click', ()=>copyText(toTSV(rowsToSheetData(currentFilteredHistory())), 'history-copy-status'));
 function renderHistory(){
+  refreshProductFilter();
   const rows = currentFilteredHistory();
-  const q = $('history-filter').value.trim();
+  const q = $('history-filter').value.trim() || $('history-product').value;
   const shown = rows.slice(0, 1000);
   $('history-body').innerHTML = shown.map(r=>`
     <tr>
