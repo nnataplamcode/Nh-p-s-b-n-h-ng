@@ -208,6 +208,8 @@
       <div class="row-flex" style="margin-top:12px;">
         <button class="btn secondary" id="btn-add-row">+ Thêm dòng thủ công</button>
         <button class="btn" id="btn-save">Lưu vào lịch sử</button>
+        <button class="btn secondary" id="btn-staging-push" title="Gửi các dòng đang kiểm tra lên đám mây để máy khác tải về sửa tiếp (chưa lưu vào lịch sử)">☁︎ Đẩy lên đám mây</button>
+        <button class="btn secondary" id="btn-staging-pull" title="Tải các dòng chờ kiểm tra mà máy khác đã đẩy lên">☁︎ Tải từ đám mây</button>
         <button class="btn ghost" id="btn-export-staging">Xuất Excel (dòng đang xem)</button>
         <button class="btn ghost" id="btn-copy-staging">Copy dữ liệu</button>
         <button class="btn ghost" id="btn-clear-staging">Xóa dữ liệu</button>
@@ -1487,8 +1489,7 @@ $('btn-sync-save').addEventListener('click', async ()=>{
   setStatus('sync-status', settings.sync_key && settings.sync_bin ? 'Đã lưu cài đặt đồng bộ.' : 'Đã lưu (chưa bật đồng bộ do thiếu Khóa hoặc Mã sổ).', 'ok');
 });
 
-async function syncPull(){
-  if(!settings.sync_key || !settings.sync_bin) return {applied:false};
+async function fetchRemote(){
   const resp = await fetch(JSONBIN_BASE+'/'+encodeURIComponent(settings.sync_bin)+'/latest', {
     headers:{ 'X-Master-Key': settings.sync_key }
   });
@@ -1496,6 +1497,20 @@ async function syncPull(){
   if(!resp.ok) throw new Error(body?.message || ('mã lỗi '+resp.status));
   const remote = body?.record;
   if(!remote) throw new Error('Sổ đồng bộ trống hoặc không hợp lệ.');
+  showCloudStagingHint(remote);
+  return remote;
+}
+async function putRemote(record){
+  const resp = await fetch(JSONBIN_BASE+'/'+encodeURIComponent(settings.sync_bin), {
+    method:'PUT',
+    headers:{ 'Content-Type':'application/json', 'X-Master-Key': settings.sync_key },
+    body: JSON.stringify(record)
+  });
+  if(!resp.ok){ const b = await resp.json().catch(()=>null); throw new Error(b?.message || ('mã lỗi '+resp.status)); }
+}
+async function syncPull(){
+  if(!settings.sync_key || !settings.sync_bin) return {applied:false};
+  const remote = await fetchRemote();
   if((remote.updated_at||0) > (settings.sync_updated_at||0)){
     await applyRemoteDataset(remote);
     return {applied:true};
@@ -1504,13 +1519,49 @@ async function syncPull(){
 }
 async function syncPush(){
   if(!settings.sync_key || !settings.sync_bin) return;
-  const resp = await fetch(JSONBIN_BASE+'/'+encodeURIComponent(settings.sync_bin), {
-    method:'PUT',
-    headers:{ 'Content-Type':'application/json', 'X-Master-Key': settings.sync_key },
-    body: JSON.stringify(currentDataset())
-  });
-  if(!resp.ok){ const b = await resp.json().catch(()=>null); throw new Error(b?.message || ('mã lỗi '+resp.status)); }
+  // Giữ lại các dòng chờ kiểm tra (staging) mà máy khác đã đẩy lên, không ghi đè mất
+  const remote = await fetchRemote();
+  await putRemote({...currentDataset(), staging: Array.isArray(remote.staging) ? remote.staging : []});
 }
+
+// ---------- Dòng chờ kiểm tra trên đám mây (chưa lưu vào lịch sử) ----------
+function showCloudStagingHint(remote){
+  const n = Array.isArray(remote?.staging) ? remote.staging.length : 0;
+  if(n) setStatus('save-status', `Có ${n} dòng chờ kiểm tra trên đám mây — bấm "☁︎ Tải từ đám mây" để tải về máy này.`);
+}
+function needSyncConfig(){
+  if(settings.sync_key && settings.sync_bin) return false;
+  setStatus('save-status','Chưa cài đặt đồng bộ — vào tab Cài đặt, nhập Khóa đồng bộ và Mã sổ (giống nhau trên các máy) trước.','err');
+  return true;
+}
+$('btn-staging-push').addEventListener('click', async ()=>{
+  if(stagingRows.length===0){ setStatus('save-status','Chưa có dòng nào để đẩy lên.','err'); return; }
+  if(needSyncConfig()) return;
+  const n = stagingRows.length;
+  setStatus('save-status','Đang đẩy lên đám mây…');
+  try{
+    const remote = await fetchRemote();
+    const cloud = Array.isArray(remote.staging) ? remote.staging : [];
+    const rows = stagingRows.map(({_id, ...r})=>({...r, ngay:normDate(r.ngay)}));
+    await putRemote({...remote, staging: cloud.concat(rows)});
+    stagingRows = []; renderStaging();
+    setStatus('save-status', `Đã đẩy ${n} dòng lên đám mây (tổng ${cloud.length+n} dòng đang chờ). Trên máy khác, mở mục này và bấm "☁︎ Tải từ đám mây" để sửa tiếp rồi lưu vào lịch sử.`, 'ok');
+  }catch(e){ setStatus('save-status','Không đẩy lên được: '+e.message+' — dữ liệu vẫn còn nguyên trên máy này.','err'); }
+});
+$('btn-staging-pull').addEventListener('click', async ()=>{
+  if(needSyncConfig()) return;
+  setStatus('save-status','Đang tải từ đám mây…');
+  try{
+    const remote = await fetchRemote();
+    const cloud = Array.isArray(remote.staging) ? remote.staging : [];
+    if(cloud.length===0){ setStatus('save-status','Trên đám mây không có dòng nào đang chờ kiểm tra.'); return; }
+    // Xóa khỏi đám mây trước để không bị tải về 2 lần trên 2 máy
+    await putRemote({...remote, staging: []});
+    cloud.forEach(r=>stagingRows.push({...r, _id:'r'+uid()}));
+    renderStaging();
+    setStatus('save-status', `Đã tải ${cloud.length} dòng từ đám mây về máy này — kiểm tra, sửa rồi bấm "Lưu vào lịch sử".`, 'ok');
+  }catch(e){ setStatus('save-status','Không tải được: '+e.message,'err'); }
+});
 
 let syncTimer = null;
 function scheduleSync(){
