@@ -680,6 +680,10 @@ async function callAIOnce(s, prompt, images){
     else if(resp.status===503 || resp.status===529 || /overload|high demand|UNAVAILABLE/i.test(msg)) { err = new Error('Máy chủ AI đang quá tải tạm thời.'); err.retryable = true; }
     else err = new Error('Dịch vụ AI báo lỗi: '+msg);
     if(err.retryable===undefined) err.retryable = false;
+    // Các lỗi chỉ liên quan tới RIÊNG mô hình này (quá tải, hết lượt của mô hình, không tìm thấy mô hình)
+    // → có thể chuyển sang mô hình dự phòng. Lỗi khóa API / chưa nạp tiền thì đổi mô hình cũng vô ích.
+    err.canSwitch = resp.status===404 || resp.status===429 || resp.status===503 || resp.status===529 || /overload|high demand|UNAVAILABLE/i.test(msg);
+    if(/Tài khoản API chưa có tiền/.test(err.message)) err.canSwitch = false;
     throw err;
   }
   const u = body.usageMetadata || body.usage || {};
@@ -703,8 +707,7 @@ function gemThinking(s){ return s.provider!=='anthropic' && s.provider!=='openai
 
 // Tự động thử lại khi máy chủ AI báo quá tải (503) hoặc hết lượt dùng tạm thời (429).
 // Với 429 chỉ thử lại 1 lần, vì mỗi lần thử lại cũng bị tính vào hạn mức lượt gọi.
-async function callAI(s, prompt, images, onRetry){
-  const maxAttempts = 4;
+async function callAI(s, prompt, images, onRetry, maxAttempts=4){
   for(let i=0; ; i++){
     try{ return await callAIOnce(s, prompt, images); }
     catch(e){
@@ -712,6 +715,37 @@ async function callAI(s, prompt, images, onRetry){
       const delay = e.retryDelayMs || [2000,5000,12000][i] || 12000;
       if(onRetry) onRetry(i+1, maxAttempts, delay);
       await sleep(delay);
+    }
+  }
+}
+
+// Mô hình dự phòng cho từng nhà cung cấp: khi mô hình đang chọn quá tải / hết lượt thì tự chuyển sang.
+// (Hạn mức miễn phí của Gemini tính riêng cho từng mô hình, nên đổi mô hình thường là có lượt ngay.)
+const FALLBACK_MODELS = {
+  gemini: ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+  anthropic: ['claude-sonnet-5', 'claude-haiku-4-5'],
+  openai: ['gpt-4o-mini', 'gpt-4.1-mini']
+};
+let lastModelUsed = '';
+async function callAIWithFallback(s, prompt, images, onStatus){
+  const models = [s.model, ...(FALLBACK_MODELS[s.provider]||[])].filter((m,i,a)=>m && a.indexOf(m)===i);
+  const tried = [];
+  for(let i=0; i<models.length; i++){
+    const model = models[i];
+    try{
+      // Mô hình chính thử lại vài lần; mô hình dự phòng chỉ thử lại 1 lần để chuyển tiếp cho nhanh.
+      const text = await callAI(Object.assign({}, s, {model}), prompt, images, (attempt,total,delayMs)=>{
+        onStatus(`Mô hình ${model} đang bận, tự thử lại sau ${Math.round(delayMs/1000)}s (lần ${attempt}/${total-1})…`);
+      }, i===0 ? 3 : 2);
+      lastModelUsed = model;
+      return text;
+    }catch(e){
+      tried.push(model);
+      if(!e.canSwitch || i===models.length-1){
+        if(tried.length>1) e.message = `Đã thử ${tried.length} mô hình (${tried.join(', ')}) nhưng đều lỗi. Lỗi cuối: ${e.message}`;
+        throw e;
+      }
+      onStatus(`Mô hình ${model} ${/quá tải/.test(e.message)?'đang quá tải':'không dùng được lúc này'}, tự chuyển sang ${models[i+1]}…`);
     }
   }
 }
@@ -872,9 +906,7 @@ async function processImages(){
   const prompt = buildPrompt(date, ready.length);
   let rowsAdded = 0, errMsg = '';
   try{
-    const text = await callAI(settings, prompt, ready.map(r=>r.img), (attempt,total,delayMs)=>{
-      setStatus('process-status', `Máy chủ AI đang bận, tự thử lại sau ${Math.round(delayMs/1000)}s (lần ${attempt}/${total-1})…`);
-    });
+    const text = await callAIWithFallback(settings, prompt, ready.map(r=>r.img), t=>setStatus('process-status', t));
     bar.firstElementChild.style.width='90%';
     const rows = extractJSONArray(text);
     rows.forEach(r=>stagingRows.push(normalizeRow(r, date)));
@@ -893,7 +925,7 @@ async function processImages(){
     const overloadHint = /quá tải|hết lượt dùng/.test(errMsg) ? ' Nếu vẫn liên tục quá tải hoặc hết lượt miễn phí, thử đổi mô hình/nhà cung cấp khác trong Cài đặt, chờ vài phút rồi bấm "Đọc bằng AI" lại (chỉ ảnh lỗi sẽ được gửi lại), hoặc dùng gói trả phí.' : '';
     setStatus('process-status', `Lỗi khi đọc ${ready.length} ảnh: ${errMsg}${badFiles.length?' | Ảnh không mở được: '+badFiles.join(' | '):''}${overloadHint}`, 'err');
   } else {
-    let msg = `Đã đọc được ${rowsAdded} dòng từ ${ready.length} ảnh (1 lượt gọi`+(lastUsage&&lastUsage.input?`, ${fmtVN(lastUsage.input)} token vào + ${fmtVN(lastUsage.output)} token ra`:'')+`) — vui lòng kiểm tra lại trước khi lưu.`;
+    let msg = `Đã đọc được ${rowsAdded} dòng từ ${ready.length} ảnh (1 lượt gọi`+(lastUsage&&lastUsage.input?`, ${fmtVN(lastUsage.input)} token vào + ${fmtVN(lastUsage.output)} token ra`:'')+(lastModelUsed && lastModelUsed!==settings.model?`, dùng mô hình dự phòng ${lastModelUsed}`:'')+`) — vui lòng kiểm tra lại trước khi lưu.`;
     if(badFiles.length) msg += ` Ảnh không mở được: ${badFiles.join(' | ')}.`;
     setStatus('process-status', msg, 'ok');
     selectedFiles.filter(s=>s.state==='done').forEach(s=>URL.revokeObjectURL(s.url));
