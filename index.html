@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Sổ Bán Hàng</title>
+<title>Nhập sổ bán hàng</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📒</text></svg>">
 <link rel="manifest" href="./manifest.json">
 <meta name="theme-color" content="#2F5D8A">
@@ -11,7 +11,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="apple-mobile-web-app-title" content="Sổ Bán Hàng">
+<meta name="apple-mobile-web-app-title" content="Nhập sổ bán hàng">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Lora:ital,wght@0,600;1,500&display=swap" rel="stylesheet">
 <style>
 
@@ -148,7 +148,7 @@
 </head>
 <body>
 <header>
-  <h1>Sổ Bán Hàng</h1>
+  <h1>Nhập sổ bán hàng</h1>
   <nav>
     <button class="active" data-tab="nhap">Nhập liệu</button>
     <button data-tab="danhmuc">Danh mục</button>
@@ -400,8 +400,8 @@
 
     <div class="card" style="border-color:var(--danger);">
       <h2 style="color:var(--danger);">Vùng nguy hiểm</h2>
-      <p class="hint">Xóa vĩnh viễn toàn bộ dữ liệu đang lưu trên máy này: khách hàng, hàng hóa, lịch sử giao dịch, khóa API và cài đặt đồng bộ. Dùng khi cho mượn/bán lại máy, hoặc muốn dọn sạch trước khi đổi thiết bị. <b>Không thể hoàn tác</b> — hãy tải bản sao lưu trước nếu chưa chắc chắn.</p>
-      <button class="btn" id="btn-wipe-all" style="background:var(--danger); color:#fff;">Xóa toàn bộ dữ liệu trên máy này</button>
+      <p class="hint">Xóa vĩnh viễn toàn bộ lịch sử giao dịch đang lưu trên máy này. Khách hàng, hàng hóa, viết tắt, khóa API và cài đặt đồng bộ được giữ nguyên. Nếu đang bật tự động đồng bộ, lịch sử trên đám mây cũng sẽ bị xóa theo. <b>Không thể hoàn tác</b> — hãy tải bản sao lưu trước nếu chưa chắc chắn.</p>
+      <button class="btn" id="btn-wipe-all" style="background:var(--danger); color:#fff;">Xóa toàn bộ lịch sử trên máy này</button>
       <div class="status-line" id="wipe-status"></div>
     </div>
   </section>
@@ -1224,23 +1224,17 @@ async function toggleHistoryPaid(id){
 window.delHistory = delHistory; window.toggleHistoryPaid = toggleHistoryPaid;
 
 // =====================================================================
-//  XÓA TOÀN BỘ DỮ LIỆU (dữ liệu + khóa API + cài đặt đồng bộ trên máy này)
+//  XÓA TOÀN BỘ LỊCH SỬ GIAO DỊCH (giữ danh mục, khóa API, cài đặt đồng bộ)
 // =====================================================================
 $('btn-wipe-all').addEventListener('click', async ()=>{
-  if(!confirm('XÓA VĨNH VIỄN toàn bộ dữ liệu trên máy này: khách hàng, hàng hóa, lịch sử giao dịch, khóa API và cài đặt đồng bộ. Không thể hoàn tác. Bạn có chắc chắn?')) return;
+  if(!confirm('XÓA VĨNH VIỄN toàn bộ lịch sử giao dịch ('+history.length+' dòng) trên máy này. Khách hàng, hàng hóa, khóa API và cài đặt đồng bộ vẫn được giữ. Không thể hoàn tác. Bạn có chắc chắn?')) return;
   const typed = prompt('Để xác nhận, gõ chữ XOA (viết hoa, không dấu) vào ô bên dưới rồi bấm OK:');
   if(typed !== 'XOA'){ setStatus('wipe-status', 'Đã hủy — không xóa gì cả.'); return; }
   try{
-    await Promise.all(['customers','products','abbrs','transactions','settings'].map(k=>Store.delete(k)));
-    customers=[]; products=[]; abbrs=[]; history=[];
-    settings = {provider:'gemini', key:'', model:'', theme:'', sync_key:'', sync_bin:'', sync_auto:false, sync_updated_at:0};
-    stagingRows = [];
-    selectedFiles.forEach(s=>URL.revokeObjectURL(s.url)); selectedFiles=[];
-    applyTheme(); loadSettingsForm(); loadSyncForm();
-    ['customers','products','abbrs'].forEach(renderCatalog);
-    renderStaging(); renderThumbs(); renderHistory();
-    updateKeyBanner();
-    setStatus('wipe-status', 'Đã xóa toàn bộ dữ liệu trên máy này.', 'ok');
+    history=[];
+    await persist('transactions');
+    renderHistory();
+    setStatus('wipe-status', 'Đã xóa toàn bộ lịch sử giao dịch trên máy này.', 'ok');
   }catch(e){ setStatus('wipe-status', 'Có lỗi khi xóa: '+(e.message||e), 'err'); }
 });
 
@@ -1264,7 +1258,7 @@ $('restore-file').addEventListener('change', async e=>{
   const file = e.target.files[0]; if(!file) return;
   try{
     const data = JSON.parse(await file.text());
-    if(!data || !Array.isArray(data.transactions)) throw new Error('File không phải bản sao lưu của Sổ Bán Hàng.');
+    if(!data || !Array.isArray(data.transactions)) throw new Error('File không phải bản sao lưu của Nhập sổ bán hàng.');
     if(!confirm(`Khôi phục sẽ THAY THẾ toàn bộ dữ liệu hiện tại bằng bản sao lưu (${data.transactions.length} giao dịch). Tiếp tục?`)){ e.target.value=''; return; }
     const fix = l=>(Array.isArray(l)?l:[]).map(x=>({id:x.id||uid(), ...x}));
     customers = fix(data.customers); products = fix(data.products); abbrs = fix(data.abbrs); history = fix(data.transactions);

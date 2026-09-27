@@ -1,6 +1,6 @@
 {
-  "name": "Sổ Bán Hàng",
-  "short_name": "Sổ Bán Hàng",
+  "name": "Nhập sổ bán hàng",
+  "short_name": "Nhập sổ bán hàng",
   "description": "Trợ lý nhập liệu sổ bán hàng, đọc ảnh viết tay bằng AI",
   "start_url": "./index.html",
   "scope": "./",
