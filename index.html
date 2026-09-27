@@ -208,6 +208,8 @@
       <div class="row-flex" style="margin-top:12px;">
         <button class="btn secondary" id="btn-add-row">+ Thêm dòng thủ công</button>
         <button class="btn" id="btn-save">Lưu vào lịch sử</button>
+        <button class="btn secondary" id="btn-staging-push" title="Gửi các dòng đang kiểm tra lên đám mây để máy khác tải về sửa tiếp (chưa lưu vào lịch sử)">☁︎ Đẩy lên đám mây</button>
+        <button class="btn secondary" id="btn-staging-pull" title="Tải các dòng chờ kiểm tra mà máy khác đã đẩy lên">☁︎ Tải từ đám mây</button>
         <button class="btn ghost" id="btn-export-staging">Xuất Excel (dòng đang xem)</button>
         <button class="btn ghost" id="btn-copy-staging">Copy dữ liệu</button>
         <button class="btn ghost" id="btn-clear-staging">Xóa dữ liệu</button>
@@ -294,14 +296,17 @@
         </label>
         <button class="btn ghost" id="btn-export-summary">Xuất Excel tổng hợp</button>
         <button class="btn ghost" id="btn-copy-summary">Copy tổng hợp</button>
+        <button class="btn ghost" id="btn-merge-summary" title="Gộp các mặt hàng đã tích chọn thành 1 dòng">Gộp dòng đã chọn</button>
+        <button class="btn ghost" id="btn-undo-merge" style="display:none;">Hoàn tác gộp</button>
       </div>
       <div class="tablewrap">
         <table>
-          <thead><tr><th>Mã hàng</th><th>Tên hàng</th><th>Tổng SL</th><th>Tổng thành tiền</th><th>Đã thanh toán</th><th>Còn nợ</th><th>Số lượt bán</th></tr></thead>
+          <thead><tr><th style="width:28px;"><input type="checkbox" id="summary-check-all" title="Chọn / bỏ chọn tất cả"></th><th>Mã hàng</th><th>Tên hàng</th><th>Tổng SL</th><th>Tổng thành tiền</th><th>Đã thanh toán</th><th>Còn nợ</th><th>Số lượt bán</th></tr></thead>
           <tbody id="summary-body"></tbody>
         </table>
       </div>
       <div class="status-line" id="summary-copy-status"></div>
+      <div class="status-line" id="summary-merge-status"></div>
       <footer class="summary" id="summary-total"></footer>
     </div>
 
@@ -1241,33 +1246,86 @@ function computeSummary(){
     const ten = r.ten_hang||'(chưa rõ tên hàng)', key=(r.ma_hang||'')+'||'+ten;
     if(!groups[key]) groups[key] = {ma_hang:r.ma_hang||'', ten_hang:ten, sl:0, thanh_tien:0, da_tt:0, con_no:0, luot:0};
     const tien = Number(r.thanh_tien)||0;
+    groups[key].key = key; (groups[key].ids ||= []).push(r.id);
     groups[key].sl += Number(r.sl)||0; groups[key].thanh_tien += tien; groups[key].luot++;
     if(r.thanh_toan==='da_thanh_toan') groups[key].da_tt += tien; else groups[key].con_no += tien;
   });
   return Object.values(groups).sort((a,b)=>b.thanh_tien-a.thanh_tien);
 }
+// Các mặt hàng đang được đánh dấu trong bảng tổng hợp (giữ nguyên khi đổi ngày / vẽ lại)
+const summaryChecked = new Set();
+// Có chọn ít nhất 1 dòng đang hiện thì chỉ lấy các dòng đã chọn, không thì lấy tất cả
+function summaryRowsForOutput(){
+  const rows = computeSummary(), sel = rows.filter(g=>summaryChecked.has(g.key));
+  return sel.length ? sel : rows;
+}
+function toggleSummaryRow(key, on){ on ? summaryChecked.add(key) : summaryChecked.delete(key); renderSummary(); }
+window.toggleSummaryRow = toggleSummaryRow;
+$('summary-check-all').addEventListener('change', e=>{
+  computeSummary().forEach(g=>e.target.checked ? summaryChecked.add(g.key) : summaryChecked.delete(g.key));
+  renderSummary();
+});
+// Gộp: đổi mã hàng / tên hàng của các giao dịch thuộc những dòng đã chọn
+// theo dòng có tổng SL lớn nhất (bằng nhau thì lấy dòng thành tiền lớn hơn).
+// Chỉ áp dụng cho các giao dịch đang nằm trong bảng (theo ngày đang chọn).
+let lastMerge = null;
+$('btn-merge-summary').addEventListener('click', async ()=>{
+  const sel = computeSummary().filter(g=>summaryChecked.has(g.key));
+  if(sel.length<2){ setStatus('summary-merge-status','Hãy tích chọn ít nhất 2 dòng để gộp.','err'); return; }
+  const target = sel.slice().sort((a,b)=>b.sl-a.sl || b.thanh_tien-a.thanh_tien)[0];
+  const others = sel.filter(g=>g!==target);
+  const ids = new Set(others.flatMap(g=>g.ids));
+  const backup = [];
+  history.forEach(r=>{ if(ids.has(r.id)){ backup.push({id:r.id, ma_hang:r.ma_hang, ten_hang:r.ten_hang}); r.ma_hang = target.ma_hang; r.ten_hang = target.ten_hang; } });
+  lastMerge = backup;
+  sel.forEach(g=>summaryChecked.delete(g.key));
+  try{
+    await persist('transactions'); renderHistory();
+    $('btn-undo-merge').style.display = '';
+    setStatus('summary-merge-status', `Đã gộp ${others.map(g=>'"'+g.ten_hang+'"').join(', ')} vào "${target.ten_hang}" (${backup.length} giao dịch được đổi tên hàng).`, 'ok');
+  }catch(e){ setStatus('summary-merge-status','Lỗi khi lưu: '+(e.message||e),'err'); }
+});
+$('btn-undo-merge').addEventListener('click', async ()=>{
+  if(!lastMerge) return;
+  const byId = new Map(lastMerge.map(b=>[b.id,b]));
+  history.forEach(r=>{ const b = byId.get(r.id); if(b){ r.ma_hang = b.ma_hang; r.ten_hang = b.ten_hang; } });
+  lastMerge = null; $('btn-undo-merge').style.display = 'none';
+  try{ await persist('transactions'); renderHistory(); setStatus('summary-merge-status','Đã hoàn tác lần gộp vừa rồi.','ok'); }
+  catch(e){ setStatus('summary-merge-status','Lỗi khi lưu: '+(e.message||e),'err'); }
+});
 function renderSummary(){
   const rows = computeSummary();
-  $('summary-body').innerHTML = rows.map(g=>`
-    <tr><td>${esc(g.ma_hang)}</td><td>${esc(g.ten_hang)}</td>
+  $('summary-body').innerHTML = rows.map((g,i)=>`
+    <tr${summaryChecked.has(g.key)?' style="background:var(--paid-bg);"':''}>
+    <td><input type="checkbox" data-i="${i}" ${summaryChecked.has(g.key)?'checked':''}></td>
+    <td>${esc(g.ma_hang)}</td><td>${esc(g.ten_hang)}</td>
     <td class="num">${fmtVN(g.sl)}</td><td class="num">${fmtVN(g.thanh_tien)}</td>
     <td class="num">${fmtVN(g.da_tt)}</td><td class="num">${fmtVN(g.con_no)}</td><td class="num">${g.luot}</td></tr>
-  `).join('') || emptyRow(7);
+  `).join('') || emptyRow(8);
+  $('summary-body').querySelectorAll('input[type=checkbox]').forEach(cb=>
+    cb.addEventListener('change', ()=>toggleSummaryRow(rows[cb.dataset.i].key, cb.checked)));
+  const sel = rows.filter(g=>summaryChecked.has(g.key)), all = $('summary-check-all');
+  all.checked = rows.length>0 && sel.length===rows.length;
+  all.indeterminate = sel.length>0 && sel.length<rows.length;
   $('summary-total').innerHTML =
     `<div>Tổng số lượng: <b>${fmtVN(rows.reduce((s,g)=>s+g.sl,0))}</b></div>
      <div>Tổng thành tiền: <b>${fmtVN(rows.reduce((s,g)=>s+g.thanh_tien,0))}</b></div>
      <div>Đã thanh toán: <b>${fmtVN(rows.reduce((s,g)=>s+g.da_tt,0))}</b></div>
      <div>Còn nợ: <b>${fmtVN(rows.reduce((s,g)=>s+g.con_no,0))}</b></div>
-     <div>Số mặt hàng: <b>${rows.length}</b></div>`;
+     <div>Số mặt hàng: <b>${rows.length}</b></div>` +
+    (sel.length ? `<div style="flex-basis:100%;">Đã chọn <b>${sel.length}</b> mặt hàng — SL: <b>${fmtVN(sel.reduce((s,g)=>s+g.sl,0))}</b>,
+      thành tiền: <b>${fmtVN(sel.reduce((s,g)=>s+g.thanh_tien,0))}</b>,
+      đã thanh toán: <b>${fmtVN(sel.reduce((s,g)=>s+g.da_tt,0))}</b>,
+      còn nợ: <b>${fmtVN(sel.reduce((s,g)=>s+g.con_no,0))}</b>. Xuất Excel / Copy sẽ chỉ lấy các dòng đã chọn.</div>` : '');
 }
 $('btn-export-summary').addEventListener('click', ()=>{
-  const rows = computeSummary(); if(rows.length===0) return;
+  const rows = summaryRowsForOutput(); if(rows.length===0) return;
   const label = $('summary-all-dates').checked ? 'tat-ca' : ($('summary-date').value || todayISO());
   exportSheet(rows.map(g=>({'Mã hàng':g.ma_hang,'Tên hàng':g.ten_hang,'Tổng SL':g.sl,'Tổng thành tiền':g.thanh_tien,'Đã thanh toán':g.da_tt,'Còn nợ':g.con_no,'Số lượt bán':g.luot})),
     [{wch:10},{wch:24},{wch:10},{wch:14},{wch:14},{wch:14},{wch:12}], 'TongHop', 'tong-hop-ban-le-'+label+'.xlsx');
 });
 $('btn-copy-summary').addEventListener('click', ()=>{
-  const rows = computeSummary();
+  const rows = summaryRowsForOutput();
   const data = rows.map(g=>({'Mã hàng':g.ma_hang,'Tên hàng':g.ten_hang,'Tổng SL':g.sl,'Tổng thành tiền':g.thanh_tien,'Đã thanh toán':g.da_tt,'Còn nợ':g.con_no,'Số lượt bán':g.luot}));
   copyText(toTSV(data), 'summary-copy-status');
 });
@@ -1431,8 +1489,7 @@ $('btn-sync-save').addEventListener('click', async ()=>{
   setStatus('sync-status', settings.sync_key && settings.sync_bin ? 'Đã lưu cài đặt đồng bộ.' : 'Đã lưu (chưa bật đồng bộ do thiếu Khóa hoặc Mã sổ).', 'ok');
 });
 
-async function syncPull(){
-  if(!settings.sync_key || !settings.sync_bin) return {applied:false};
+async function fetchRemote(){
   const resp = await fetch(JSONBIN_BASE+'/'+encodeURIComponent(settings.sync_bin)+'/latest', {
     headers:{ 'X-Master-Key': settings.sync_key }
   });
@@ -1440,6 +1497,20 @@ async function syncPull(){
   if(!resp.ok) throw new Error(body?.message || ('mã lỗi '+resp.status));
   const remote = body?.record;
   if(!remote) throw new Error('Sổ đồng bộ trống hoặc không hợp lệ.');
+  showCloudStagingHint(remote);
+  return remote;
+}
+async function putRemote(record){
+  const resp = await fetch(JSONBIN_BASE+'/'+encodeURIComponent(settings.sync_bin), {
+    method:'PUT',
+    headers:{ 'Content-Type':'application/json', 'X-Master-Key': settings.sync_key },
+    body: JSON.stringify(record)
+  });
+  if(!resp.ok){ const b = await resp.json().catch(()=>null); throw new Error(b?.message || ('mã lỗi '+resp.status)); }
+}
+async function syncPull(){
+  if(!settings.sync_key || !settings.sync_bin) return {applied:false};
+  const remote = await fetchRemote();
   if((remote.updated_at||0) > (settings.sync_updated_at||0)){
     await applyRemoteDataset(remote);
     return {applied:true};
@@ -1448,13 +1519,49 @@ async function syncPull(){
 }
 async function syncPush(){
   if(!settings.sync_key || !settings.sync_bin) return;
-  const resp = await fetch(JSONBIN_BASE+'/'+encodeURIComponent(settings.sync_bin), {
-    method:'PUT',
-    headers:{ 'Content-Type':'application/json', 'X-Master-Key': settings.sync_key },
-    body: JSON.stringify(currentDataset())
-  });
-  if(!resp.ok){ const b = await resp.json().catch(()=>null); throw new Error(b?.message || ('mã lỗi '+resp.status)); }
+  // Giữ lại các dòng chờ kiểm tra (staging) mà máy khác đã đẩy lên, không ghi đè mất
+  const remote = await fetchRemote();
+  await putRemote({...currentDataset(), staging: Array.isArray(remote.staging) ? remote.staging : []});
 }
+
+// ---------- Dòng chờ kiểm tra trên đám mây (chưa lưu vào lịch sử) ----------
+function showCloudStagingHint(remote){
+  const n = Array.isArray(remote?.staging) ? remote.staging.length : 0;
+  if(n) setStatus('save-status', `Có ${n} dòng chờ kiểm tra trên đám mây — bấm "☁︎ Tải từ đám mây" để tải về máy này.`);
+}
+function needSyncConfig(){
+  if(settings.sync_key && settings.sync_bin) return false;
+  setStatus('save-status','Chưa cài đặt đồng bộ — vào tab Cài đặt, nhập Khóa đồng bộ và Mã sổ (giống nhau trên các máy) trước.','err');
+  return true;
+}
+$('btn-staging-push').addEventListener('click', async ()=>{
+  if(stagingRows.length===0){ setStatus('save-status','Chưa có dòng nào để đẩy lên.','err'); return; }
+  if(needSyncConfig()) return;
+  const n = stagingRows.length;
+  setStatus('save-status','Đang đẩy lên đám mây…');
+  try{
+    const remote = await fetchRemote();
+    const cloud = Array.isArray(remote.staging) ? remote.staging : [];
+    const rows = stagingRows.map(({_id, ...r})=>({...r, ngay:normDate(r.ngay)}));
+    await putRemote({...remote, staging: cloud.concat(rows)});
+    stagingRows = []; renderStaging();
+    setStatus('save-status', `Đã đẩy ${n} dòng lên đám mây (tổng ${cloud.length+n} dòng đang chờ). Trên máy khác, mở mục này và bấm "☁︎ Tải từ đám mây" để sửa tiếp rồi lưu vào lịch sử.`, 'ok');
+  }catch(e){ setStatus('save-status','Không đẩy lên được: '+e.message+' — dữ liệu vẫn còn nguyên trên máy này.','err'); }
+});
+$('btn-staging-pull').addEventListener('click', async ()=>{
+  if(needSyncConfig()) return;
+  setStatus('save-status','Đang tải từ đám mây…');
+  try{
+    const remote = await fetchRemote();
+    const cloud = Array.isArray(remote.staging) ? remote.staging : [];
+    if(cloud.length===0){ setStatus('save-status','Trên đám mây không có dòng nào đang chờ kiểm tra.'); return; }
+    // Xóa khỏi đám mây trước để không bị tải về 2 lần trên 2 máy
+    await putRemote({...remote, staging: []});
+    cloud.forEach(r=>stagingRows.push({...r, _id:'r'+uid()}));
+    renderStaging();
+    setStatus('save-status', `Đã tải ${cloud.length} dòng từ đám mây về máy này — kiểm tra, sửa rồi bấm "Lưu vào lịch sử".`, 'ok');
+  }catch(e){ setStatus('save-status','Không tải được: '+e.message,'err'); }
+});
 
 let syncTimer = null;
 function scheduleSync(){
