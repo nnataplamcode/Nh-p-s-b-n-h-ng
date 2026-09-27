@@ -651,6 +651,19 @@ async function callAIOnce(s, prompt, images){
       return callAIOnce(Object.assign({}, s, {_noThinkingCfg:true}), prompt, images);
     }
     if(resp.status===401 || resp.status===403 || /API key/i.test(msg)) err = new Error('Khóa API không hợp lệ hoặc không có quyền: '+msg);
+    else if((s.provider==='openai' && /insufficient_quota/i.test(errAll)) || (s.provider==='anthropic' && /credit balance/i.test(errAll))){
+      // Tài khoản API chưa nạp tiền/hết tiền: thử lại bao nhiêu cũng vô ích. Trang "Usage" sẽ trống
+      // vì chưa có lượt gọi nào thành công. Lưu ý: gói ChatGPT Plus / Claude Pro KHÔNG dùng được cho API.
+      const where = s.provider==='openai' ? ' Nạp tiền tại platform.openai.com → Settings → Billing (API OpenAI không có gói miễn phí; gói ChatGPT Plus không áp dụng cho API).'
+        : ' Nạp tiền tại console.anthropic.com → Plans & Billing (gói Claude Pro không áp dụng cho API).';
+      err = new Error('Tài khoản API chưa có tiền (chưa nạp hoặc đã hết số dư), không phải hết lượt tạm thời.'+where+' Muốn dùng miễn phí: chọn nhà cung cấp Gemini với khóa lấy tại aistudio.google.com. ('+msg+')');
+      err.retryable = false;
+    }
+    else if(resp.status===429 && /limit:\s*0\b/.test(errAll)){
+      // Gemini: mô hình này không có hạn mức miễn phí cho khóa này (limit: 0) — chờ bao lâu cũng không có lượt.
+      err = new Error('Mô hình "'+s.model+'" không có lượt miễn phí cho khóa này (hạn mức = 0). Vào Cài đặt đổi sang mô hình gemini-flash-latest hoặc gemini-flash-lite-latest, hoặc bật thanh toán cho dự án. ('+msg+')');
+      err.retryable = false;
+    }
     else if(resp.status===429 && /PerDay|per day|daily/i.test(errAll)){
       // Hết hạn mức THEO NGÀY: thử lại chỉ tốn thêm lượt vô ích nên dừng luôn.
       err = new Error('Đã hết lượt dùng trong NGÀY của khóa này. Hạn mức miễn phí của Google được đặt lại vào khoảng 14–15 giờ chiều (giờ Việt Nam). Có thể đổi sang mô hình khác trong Cài đặt (mỗi mô hình có hạn mức riêng) hoặc dùng khóa khác. ('+msg+')');
@@ -658,9 +671,9 @@ async function callAIOnce(s, prompt, images){
     }
     else if(resp.status===429){
       // Gemini/OpenAI/Anthropic thường gợi ý thời gian chờ trong thông báo lỗi, VD "retry in 40.8s" hoặc "try again in 20ms".
-      const m = msg.match(/retry in\s*([\d.]+)\s*s/i) || msg.match(/"retryDelay":"(\d+)s"/i) || msg.match(/try again in\s*([\d.]+)\s*s/i);
+      const m = msg.match(/retry in\s*([\d.]+)\s*s/i) || errAll.match(/"retryDelay":"(\d+)s"/i) || msg.match(/try again in\s*([\d.]+)\s*s/i);
       const waitSec = m ? Math.ceil(parseFloat(m[1])) : null;
-      err = new Error('Đã hết lượt dùng miễn phí (hoặc hết hạn mức) trong khoảng thời gian này' + (waitSec?`, cần chờ khoảng ${waitSec} giây`:'') + '. ('+msg+')');
+      err = new Error('Đã hết lượt dùng (bị giới hạn số lượt gọi) trong khoảng thời gian ngắn này' + (waitSec?`, cần chờ khoảng ${waitSec} giây`:'') + '. ('+msg+')');
       err.retryable = true; err.quota = true; err.retryDelayMs = waitSec ? (waitSec*1000 + 1000) : 15000;
     }
     else if(resp.status===404) err = new Error('Không tìm thấy mô hình "'+s.model+'" — kiểm tra tên mô hình trong Cài đặt.');
