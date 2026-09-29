@@ -820,7 +820,12 @@ Quy ước trong sổ:
 - Dấu "+" đứng trước tên/mã khách hàng nghĩa là khách còn NỢ (chưa thanh toán).
 - Dấu "+" bên trong vòng tròn (⊕, trông giống dấu cộng khoanh tròn) nghĩa là khách ĐÃ THANH TOÁN.
 - Chữ trong ngoặc () là các mặt hàng gộp chung của một khách mua nhiều món trong một lượt.
-- Số lượng và đơn giá có thể viết tắt hoặc chỉ ghi tổng thành tiền; nếu chỉ có tổng tiền, hãy suy ra số lượng/đơn giá dựa vào danh mục hàng hóa bên dưới nếu khớp được, nếu không chắc thì để trống đơn giá và ghi rõ trong "ghi_chu" là "cần kiểm tra".
+- Mỗi dòng hàng trong sổ gồm 3 cột theo thứ tự từ trái sang phải:
+  + Cột 1: TÊN HÀNG (có thể viết tắt).
+  + Cột 2: SỐ LƯỢNG hàng bán → trường "sl".
+  + Cột 3: THÀNH TIỀN (tổng số tiền của cả dòng) → trường "thanh_tien".
+  Cột 3 KHÔNG PHẢI đơn giá. Tuyệt đối không nhân cột 2 với cột 3. Sổ không ghi đơn giá, nên để trống "don_gia" (phần mềm tự tính đơn giá = thành tiền / số lượng).
+- Nếu một dòng chỉ có tên hàng và một con số, con số đó là thành tiền; để trống số lượng và ghi "cần kiểm tra" trong "ghi_chu".
 - Số tiền thường viết tắt theo nghìn (VD "750" hoặc "750k" = 750000). Hãy quy đổi ra đồng.
 - Nếu trang không ghi ngày rõ ràng, hoặc ảnh không đủ căn cứ để biết ngày khác, dùng ngày mặc định "${date}".
 
@@ -834,7 +839,7 @@ Danh sách mã hàng đã có (mã = tên | đơn giá mặc định):
 ${prodText}
 
 Với mỗi dòng giao dịch đọc được (từ tất cả các ảnh gộp lại), trả về một object có các trường:
-ngay (định dạng YYYY-MM-DD), ma_kh (mã khách hàng nếu khớp được với danh sách trên, để trống nếu không rõ), ten_kh (tên khách hàng như viết trong sổ), ma_hang (mã hàng nếu khớp được, để trống nếu không rõ), ten_hang (tên hàng đầy đủ sau khi dịch viết tắt), sl (số lượng, số), don_gia (đơn giá, số, để trống nếu không chắc), thanh_tien (thành tiền, số), thanh_toan ("da_thanh_toan" hoặc "con_no"), ghi_chu (ghi chú, ví dụ "cần kiểm tra" nếu không chắc chắn).
+ngay (định dạng YYYY-MM-DD), ma_kh (mã khách hàng nếu khớp được với danh sách trên, để trống nếu không rõ), ten_kh (tên khách hàng như viết trong sổ), ma_hang (mã hàng nếu khớp được, để trống nếu không rõ), ten_hang (tên hàng đầy đủ sau khi dịch viết tắt), sl (số lượng = cột 2, số), don_gia (luôn để trống ""), thanh_tien (thành tiền = cột 3, số, giữ nguyên số ghi trong sổ đã quy đổi ra đồng), thanh_toan ("da_thanh_toan" hoặc "con_no"), ghi_chu (ghi chú, ví dụ "cần kiểm tra" nếu không chắc chắn).
 
 Chỉ trả về DUY NHẤT một JSON array các object trên, không thêm chữ giải thích nào khác, không bọc trong object khác. Nếu một khách mua nhiều mặt hàng, tách thành nhiều dòng riêng, mỗi dòng vẫn giữ đúng mã KH và trạng thái thanh toán của khách đó. Nếu không có giao dịch nào, trả về [].`;
 }
@@ -857,8 +862,18 @@ function enrichRow(r){
   return r;
 }
 
-function normalizeRow(r, date){
-  return enrichRow({
+// Dòng do AI đọc ảnh: cột 3 trong sổ là THÀNH TIỀN, nên đơn giá luôn = thành tiền / số lượng.
+function fixAIRowPrice(r){
+  const sl = Number(r.sl), tt = Number(r.thanh_tien);
+  if(r.thanh_tien!=='' && r.thanh_tien!=null && tt && r.sl!=='' && r.sl!=null && sl){
+    r.don_gia = Math.round(tt/sl);
+  }
+  return r;
+}
+
+function normalizeRow(r, date, fromAI){
+  if(fromAI) r = Object.assign({}, r, {don_gia: ''});
+  const row = enrichRow({
     _id: 'r'+uid(),
     ngay: normDate(r.ngay) || date,
     ma_kh: r.ma_kh || '', ten_kh: r.ten_kh || '',
@@ -867,6 +882,7 @@ function normalizeRow(r, date){
     thanh_toan: isPaidText(r.thanh_toan) ? 'da_thanh_toan' : 'con_no',
     ghi_chu: r.ghi_chu || ''
   });
+  return fromAI ? fixAIRowPrice(row) : row;
 }
 
 // =====================================================================
@@ -933,7 +949,7 @@ async function processImages(){
     const text = await callAIWithFallback(settings, prompt, ready.map(r=>r.img), t=>setStatus('process-status', t));
     bar.firstElementChild.style.width='90%';
     const rows = extractJSONArray(text);
-    rows.forEach(r=>stagingRows.push(normalizeRow(r, date)));
+    rows.forEach(r=>stagingRows.push(normalizeRow(r, date, true)));
     rowsAdded = rows.length;
     ready.forEach(r=>r.s.state='done');
   }catch(e){
