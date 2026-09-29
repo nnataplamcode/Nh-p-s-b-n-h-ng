@@ -250,6 +250,7 @@
           <button class="btn ghost" onclick="addCatalogRow('customers')">+ Thêm</button>
         </div>
         <button class="btn ghost" style="margin-top:8px;" onclick="toggleBulk('customers')">Nhập hàng loạt ▾</button>
+        <button class="btn ghost" id="clear-customers" style="margin-top:8px;" onclick="clearCatalog('customers')">Xóa tất cả</button>
         <div class="bulk-panel" id="bulk-customers" style="display:none; margin-top:8px;">
           <textarea id="bulk-customers-text" rows="4" style="width:100%; font-family:inherit; font-size:13px; background:var(--paper); border:1px solid var(--border); border-radius:6px; color:var(--ink); padding:8px;" placeholder="Dán bảng từ Excel: mỗi dòng 1 khách, cách nhau bằng Tab. VD:&#10;gd&#9;Chị Giang Dinh"></textarea>
           <div class="row-flex" style="margin-top:6px;">
@@ -262,7 +263,7 @@
       </div>
       <div class="card">
         <h2>Hàng hóa</h2>
-        <p class="hint">Danh mục mã hàng chính thức, dùng để điền cột "Mã hàng" khi xuất báo cáo Excel. VD: <b>tgt</b> → Trứng gà trắng, giá 2.500.</p>
+        <p class="hint">Danh mục mã hàng chính thức. Khi đọc ảnh, AI chỉ nhận các mặt hàng trong danh mục này; mặt hàng không khớp sẽ được ghi chú "cần kiểm tra". VD: <b>tgt</b> → Trứng gà trắng, giá 2.500. Bấm vào ô để sửa/xóa tên.</p>
         <div class="tablewrap"><table class="mini-table">
           <thead><tr><th>Mã hàng</th><th>Tên hàng</th><th>Đơn giá</th><th></th></tr></thead>
           <tbody id="products-body"></tbody>
@@ -274,6 +275,7 @@
           <button class="btn ghost" onclick="addCatalogRow('products')">+ Thêm</button>
         </div>
         <button class="btn ghost" style="margin-top:8px;" onclick="toggleBulk('products')">Nhập hàng loạt ▾</button>
+        <button class="btn ghost" id="clear-products" style="margin-top:8px;" onclick="clearCatalog('products')">Xóa tất cả</button>
         <div class="bulk-panel" id="bulk-products" style="display:none; margin-top:8px;">
           <textarea id="bulk-products-text" rows="4" style="width:100%; font-family:inherit; font-size:13px; background:var(--paper); border:1px solid var(--border); border-radius:6px; color:var(--ink); padding:8px;" placeholder="Dán bảng từ Excel: mỗi dòng 1 mặt hàng, cách nhau bằng Tab. VD:&#10;tgt&#9;Trứng gà trắng&#9;2500"></textarea>
           <div class="row-flex" style="margin-top:6px;">
@@ -538,7 +540,16 @@ function isPaidText(s){
 function setStatus(id, text, kind){ const el=$(id); el.textContent=text; el.className='status-line'+(kind?' '+kind:''); }
 
 const COLS = {customers:()=>customers, products:()=>products, abbrs:()=>abbrs, transactions:()=>history};
-async function persist(name){ await Store.set(name, COLS[name]()); scheduleSync(); }
+// Mỗi lần sửa dữ liệu trên máy này đều ghi lại thời điểm, để lần đồng bộ sau bản cũ trên đám mây
+// không ghi đè lên (VD mục vừa xóa trong danh mục bị tải về lại).
+async function persist(name){
+  await Store.set(name, COLS[name]());
+  settings.sync_updated_at = Date.now();
+  await Store.set('settings', settings);
+  scheduleSync();
+}
+// Dữ liệu cũ / nhập từ nơi khác có thể thiếu id → không xóa được. Bổ sung id cho mọi mục.
+function ensureIds(list){ let changed=false; list.forEach(x=>{ if(!x.id){ x.id=uid(); changed=true; } }); return changed; }
 function sortByMa(list, f){ return list.sort((a,b)=>String(a[f]||'').localeCompare(String(b[f]||''),'vi')); }
 
 $('input-date').value = todayISO();
@@ -559,6 +570,7 @@ document.querySelectorAll('nav button').forEach(b=>b.addEventListener('click', (
   products  = await Store.get('products', []);
   abbrs     = await Store.get('abbrs', []);
   history   = await Store.get('transactions', []);
+  for(const k of ['customers','products','abbrs']) if(ensureIds(COLS[k]())) await Store.set(k, COLS[k]());
   settings  = Object.assign(settings, await Store.get('settings', {}));
   applyTheme();
   loadSettingsForm();
@@ -641,7 +653,7 @@ async function callAIOnce(s, prompt, images){
           'anthropic-version':'2023-06-01',
           'anthropic-dangerous-direct-browser-access':'true'
         },
-        body: JSON.stringify({ model:s.model, max_tokens:8000, messages:[{role:'user', content}] })
+        body: JSON.stringify({ model:s.model, max_tokens:16000, temperature:0, messages:[{role:'user', content}] })
       });
     } else if(s.provider==='openai'){
       const content = [{type:'text', text:prompt}];
@@ -649,13 +661,14 @@ async function callAIOnce(s, prompt, images){
       resp = await fetch('https://api.openai.com/v1/chat/completions', {
         method:'POST',
         headers:{ 'content-type':'application/json', 'Authorization':'Bearer '+s.key },
-        body: JSON.stringify({ model:s.model, max_tokens:8000, messages:[{role:'user', content}] })
+        body: JSON.stringify({ model:s.model, max_tokens:16000, temperature:0, messages:[{role:'user', content}] })
       });
     } else {
       const parts = images.map(img=>({inline_data:{mime_type:img.mime, data:img.data}}));
       parts.push({text:prompt});
       const url = 'https://generativelanguage.googleapis.com/v1beta/models/'+encodeURIComponent(s.model)+':generateContent?key='+encodeURIComponent(s.key);
-      const gen = images.length ? {responseMimeType:'application/json'} : {};
+      // temperature 0: đọc đúng những gì có trong ảnh, hạn chế AI "sáng tác" thêm dòng.
+      const gen = images.length ? {responseMimeType:'application/json', temperature:0, maxOutputTokens:16384} : {};
       // Tắt "suy nghĩ" (thinking) để đỡ tốn token đầu ra — đọc sổ không cần suy luận dài.
       // Dòng Pro không cho tắt hẳn nên bỏ qua; nếu mô hình không hỗ trợ, tự gửi lại không kèm tùy chọn này.
       if(gemThinking(s)) gen.thinkingConfig = {thinkingBudget:0};
@@ -728,6 +741,8 @@ async function callAIOnce(s, prompt, images){
   }
   const cand = body.candidates && body.candidates[0];
   if(!cand) throw new Error('AI không trả về kết quả (có thể ảnh bị chặn bởi bộ lọc).');
+  if(cand.finishReason && !/STOP|MAX_TOKENS/.test(cand.finishReason) && !(cand.content?.parts||[]).length)
+    throw new Error('AI không trả về kết quả (lý do: '+cand.finishReason+').');
   return (cand.content?.parts||[]).map(p=>p.text||'').join('');
 }
 
@@ -780,13 +795,38 @@ async function callAIWithFallback(s, prompt, images, onStatus){
   }
 }
 
+// Lấy mảng dòng từ câu trả lời của AI. AI có thể bọc mảng trong object ({"giao_dich":[...]}),
+// trả về 1 object lẻ, hoặc bị cắt ngang giữa chừng khi hết token → cố cứu tối đa các dòng đọc được.
 function extractJSONArray(text){
-  let t = String(text||'').replace(/```json|```/g,'').trim();
-  try{ const v = JSON.parse(t); return Array.isArray(v) ? v : (Array.isArray(v.rows) ? v.rows : []); }catch(e){}
+  let t = String(text||'').replace(/```(?:json)?/gi,'').trim();
+  const pick = v=>{
+    if(Array.isArray(v)){
+      if(v.length && Array.isArray(v[0])) return [].concat(...v.map(pick));   // [[...ảnh 1], [...ảnh 2]]
+      return v.filter(x=>x && typeof x==='object' && !Array.isArray(x));
+    }
+    if(v && typeof v==='object'){
+      const arrs = Object.values(v).filter(Array.isArray);
+      if(arrs.length) return [].concat(...arrs.map(pick));
+      const objs = Object.values(v).filter(x=>x && typeof x==='object');
+      if(objs.length && objs.every(o=>!Array.isArray(o))) { const inner = [].concat(...objs.map(pick)); if(inner.length) return inner; }
+      return Object.keys(v).length ? [v] : [];
+    }
+    return null;
+  };
+  try{ const r = pick(JSON.parse(t)); if(r) return r; }catch(e){}
   const a = t.indexOf('['), b = t.lastIndexOf(']');
   if(a>=0 && b>a){
-    try{ return JSON.parse(t.slice(a,b+1)); }catch(e){}
+    try{ const r = pick(JSON.parse(t.slice(a,b+1))); if(r) return r; }catch(e){}
   }
+  // Bị cắt ngang: giữ lại đến object "}" hoàn chỉnh cuối cùng rồi đóng mảng.
+  if(a>=0){
+    const body = t.slice(a);
+    for(let i=body.lastIndexOf('}'); i>0; i=body.lastIndexOf('}', i-1)){
+      try{ const r = pick(JSON.parse(body.slice(0,i+1)+']')); if(r && r.length) return r; }catch(e){}
+    }
+  }
+  const o = t.indexOf('{'), ob = t.lastIndexOf('}');
+  if(o>=0 && ob>o){ try{ const r = pick(JSON.parse(t.slice(o,ob+1))); if(r) return r; }catch(e){} }
   throw new Error('AI trả về không đúng định dạng, thử lại.');
 }
 
@@ -839,33 +879,122 @@ Quy ước trong sổ:
 - Bỏ qua các nét mờ, nhòe hoặc chữ in ngược do trang bên kia hằn sang; chỉ đọc nét mực rõ của trang này.
 - Nếu trang không ghi ngày rõ ràng, hoặc ảnh không đủ căn cứ để biết ngày khác, dùng ngày mặc định "${date}".
 
+QUY TẮC CHỐNG BỊA DỮ LIỆU (bắt buộc):
+- Mỗi object trả về phải ứng với ĐÚNG MỘT dòng viết tay thật sự nhìn thấy trong ảnh. Không tự thêm dòng, không lặp lại dòng, không suy ra dòng từ các dòng khác, không "điền cho đủ".
+- Số lượng object phải bằng số dòng giao dịch thật trên trang. Đọc từ trên xuống dưới, mỗi dòng một lần.
+- Trường "nguyen_van" chép nguyên văn cả dòng như nhìn thấy trong sổ (VD "+Chị A (TT 50 200)"). Không chép được nguyên văn thì KHÔNG tạo dòng đó.
+- Chữ/số nào không đọc được thì để trống và ghi "cần kiểm tra" trong ghi_chu — tuyệt đối không đoán ra số.
+- Tuy vậy, trang có chữ viết tay giao dịch thì PHẢI trả về các dòng đó; chỉ trả về [] khi trang thật sự không có dòng giao dịch nào.
+
 Bảng từ viết tắt (viết tắt = ý nghĩa đầy đủ, dùng để dịch tên hàng):
 ${abbrText}
 
 Danh sách mã khách hàng đã có (mã = tên):
 ${custText}
 
-Danh sách mã hàng đã có (mã = tên | đơn giá mặc định):
+Danh mục hàng hóa (mã = tên) — CHỈ dùng các mặt hàng trong danh mục này:
 ${prodText}
+- Với mỗi dòng, chọn mặt hàng trong danh mục khớp nhất với cột 1 (có thể qua bảng viết tắt, viết sai chính tả, thiếu dấu…), điền ma_hang và ten_hang đúng như trong danh mục.
+- Nếu không thấy mặt hàng nào trong danh mục khớp, vẫn giữ dòng đó, để trống ma_hang, ten_hang ghi đúng chữ trong sổ và ghi "cần kiểm tra: không có trong danh mục hàng" vào ghi_chu. Không tự bịa mã hàng mới.
 
 Với mỗi dòng giao dịch đọc được (từ tất cả các ảnh gộp lại), trả về một object có các trường:
-ngay (định dạng YYYY-MM-DD), ma_kh (mã khách hàng nếu khớp được với danh sách trên, để trống nếu không rõ), ten_kh (tên khách hàng như viết trong sổ), ma_hang (mã hàng nếu khớp được, để trống nếu không rõ), cot1 (chữ ở cột 1, chép nguyên như trong sổ), ten_hang (tên hàng đầy đủ sau khi dịch cot1 theo bảng viết tắt), cot2 (chuỗi chép nguyên ở cột 2, VD "50" hoặc "30q", để trống nếu không có), cot3 (chuỗi chép nguyên ở cột 3, VD "200" hoặc "100k", để trống nếu không có), cot4 (chữ ở cột 4, để trống nếu không có), thanh_toan ("da_thanh_toan" hoặc "con_no"), ghi_chu (ghi chú, ví dụ "cần kiểm tra" nếu không chắc chắn).
+nguyen_van (chép nguyên văn cả dòng trong sổ), ngay (định dạng YYYY-MM-DD), ma_kh (mã khách hàng nếu khớp được với danh sách trên, để trống nếu không rõ), ten_kh (tên khách hàng như viết trong sổ), ma_hang (mã hàng trong danh mục hàng hóa, để trống nếu không khớp), cot1 (chữ ở cột 1, chép nguyên như trong sổ), ten_hang (tên hàng đúng như trong danh mục; nếu không khớp danh mục thì là chữ đã dịch theo bảng viết tắt), cot2 (chuỗi chép nguyên ở cột 2, VD "50" hoặc "30q", để trống nếu không có), cot3 (chuỗi chép nguyên ở cột 3, VD "200" hoặc "100k", để trống nếu không có), cot4 (chữ ở cột 4, để trống nếu không có), thanh_toan ("da_thanh_toan" hoặc "con_no"), ghi_chu (ghi chú, ví dụ "cần kiểm tra" nếu không chắc chắn).
 
 Chỉ trả về DUY NHẤT một JSON array các object trên, không thêm chữ giải thích nào khác, không bọc trong object khác. Nếu một khách mua nhiều mặt hàng, tách thành nhiều dòng riêng, mỗi dòng vẫn giữ đúng mã KH và trạng thái thanh toán của khách đó. Nếu không có giao dịch nào, trả về [].`;
 }
 
-// Bổ sung mã từ danh mục nếu AI để trống
-function enrichRow(r){
-  if(!r.ma_kh && r.ten_kh){
-    const n = stripAccents(r.ten_kh).toLowerCase().trim();
-    const c = customers.find(c=>stripAccents(c.ten).toLowerCase().trim()===n || stripAccents(c.ma).toLowerCase()===n);
-    if(c){ r.ma_kh = c.ma; }
+// ---------- khớp với danh mục ----------
+function normKey(s){ return stripAccents(s).toLowerCase().replace(/[^a-z0-9]/g,''); }
+function normWords(s){ return stripAccents(s).toLowerCase().replace(/[^a-z0-9]+/g,' ').trim(); }
+// Độ giống nhau 0..1 theo khoảng cách Levenshtein.
+function strSim(a, b){
+  if(!a || !b) return 0;
+  if(a===b) return 1;
+  const m=a.length, n=b.length; let prev=Array.from({length:n+1},(_,j)=>j);
+  for(let i=1;i<=m;i++){
+    const cur=[i];
+    for(let j=1;j<=n;j++) cur[j]=Math.min(prev[j]+1, cur[j-1]+1, prev[j-1]+(a[i-1]===b[j-1]?0:1));
+    prev=cur;
   }
-  if(!r.ma_hang && r.ten_hang){
+  return 1 - prev[n]/Math.max(m,n);
+}
+// Mặt hàng trong danh mục khớp nhất với các chữ đọc được (mã, chữ viết tắt ở cột 1, tên đã dịch).
+// Trả về {p, score}: score 1 = khớp chính xác (qua mã, tên hoặc bảng viết tắt).
+function matchProduct(cands){
+  if(!products.length) return null;
+  cands = cands.map(c=>String(c??'').trim()).filter(Boolean);
+  // Mở rộng theo bảng viết tắt: "TT" → "Trứng gà trắng"
+  const all = [];
+  cands.forEach(c=>{
+    all.push(c);
+    abbrs.filter(a=>normKey(a.viet_tat)===normKey(c)).forEach(a=>all.push(a.nghia));
+  });
+  for(const c of all){
+    const k = normKey(c); if(!k) continue;
+    const p = products.find(p=>normKey(p.ma)===k) || products.find(p=>normKey(p.ten)===k);
+    if(p) return {p, score:1};
+  }
+  let best = null;
+  for(const c of all){
+    const w = normWords(c), k = normKey(c);
+    if(k.length < 3) continue;          // chữ quá ngắn (VD "TT") chỉ nhận khớp chính xác
+    for(const p of products){
+      const pw = normWords(p.ten), pk = normKey(p.ten);
+      let sc = Math.max(strSim(w, pw), strSim(k, pk));
+      if(pk.length>=3 && (pk.includes(k) || k.includes(pk))) sc = Math.max(sc, 0.6 + 0.3*Math.min(k.length,pk.length)/Math.max(k.length,pk.length));
+      if(!best || sc>best.score) best = {p, score:sc};
+    }
+  }
+  return best;
+}
+function addNote(r, note){
+  if(String(r.ghi_chu||'').includes(note)) return;
+  r.ghi_chu = r.ghi_chu ? r.ghi_chu+'; '+note : note;
+}
+// Gán mặt hàng theo danh mục; không thấy thì ghi chú để người dùng kiểm tra lại.
+function applyProductCatalog(r, cot1){
+  if(!products.length) return r;
+  const raw = String(cot1 || r.ten_hang || r.ma_hang || '').trim();
+  const m = matchProduct([r.ma_hang, cot1, r.ten_hang]);
+  if(m && m.score>=0.8){
+    r.ma_hang = m.p.ma; r.ten_hang = m.p.ten;
+  } else if(m && m.score>=0.55){
+    r.ma_hang = m.p.ma; r.ten_hang = m.p.ten;
+    addNote(r, `cần kiểm tra: sổ ghi "${raw}", đoán là "${m.p.ten}"`);
+  } else {
+    r.ma_hang = '';
+    if(!r.ten_hang) r.ten_hang = raw;
+    r.ghi_chu = String(r.ghi_chu||'').replace(/cần kiểm tra: không có trong danh mục hàng/g,'').replace(/^[;\s]+|[;\s]+$/g,'');
+    addNote(r, raw ? `cần kiểm tra: "${raw}" không có trong danh mục hàng` : 'cần kiểm tra: không đọc được tên hàng');
+    return r;
+  }
+  r.ghi_chu = String(r.ghi_chu||'').replace(/cần kiểm tra: không có trong danh mục hàng/g,'').replace(/^[;\s]+|[;\s]+$/g,'');
+  if((r.don_gia==='' || r.don_gia==null) && m.p.gia) r.don_gia = m.p.gia;
+  return r;
+}
+
+// Bổ sung mã từ danh mục nếu AI để trống; bỏ mã KH/mã hàng AI tự nghĩ ra (không có trong danh mục).
+function enrichRow(r){
+  if(r.ma_kh && customers.length && !customers.some(c=>normKey(c.ma)===normKey(r.ma_kh))){
+    if(!r.ten_kh) r.ten_kh = r.ma_kh;
+    r.ma_kh = '';
+  }
+  if(!r.ma_kh && r.ten_kh){
+    const n = normKey(r.ten_kh);
+    const c = customers.find(c=>normKey(c.ten)===n || normKey(c.ma)===n);
+    if(c){ r.ma_kh = c.ma; }
+  } else if(r.ma_kh){
+    const c = customers.find(c=>normKey(c.ma)===normKey(r.ma_kh));
+    if(c) r.ma_kh = c.ma;
+  }
+  if(products.length){
+    applyProductCatalog(r, r._cot1);
+  } else if(!r.ma_hang && r.ten_hang){
     const n = stripAccents(r.ten_hang).toLowerCase().trim();
     const p = products.find(p=>stripAccents(p.ten).toLowerCase().trim()===n);
     if(p){ r.ma_hang = p.ma; if(r.don_gia==='' || r.don_gia==null) r.don_gia = p.gia || ''; }
   }
+  delete r._cot1;
   if((r.thanh_tien==='' || r.thanh_tien==null) && r.sl!=='' && r.don_gia!=='' ){
     const t = Number(r.sl)*Number(r.don_gia); if(t) r.thanh_tien = t;
   }
@@ -929,6 +1058,9 @@ function mapAIRow(r){
   const alt = fixQReadAs9(Number(out.sl), Number(out.thanh_tien));
   if(alt!=null){ notes.push(`cần kiểm tra: SL đọc "${out.sl}", có thể là "${alt}q"`); out.sl = alt; }
   if(!out.ten_hang && has(c1)) out.ten_hang = c1;
+  out._cot1 = has(c1) ? String(c1).trim() : '';
+  const src = pickField(r,'nguyen_van');
+  out._src = has(src) ? String(src).trim() : '';
   if(has(c4)) notes.unshift(String(c4).trim());
   if(out.ghi_chu) notes.push(out.ghi_chu);
   out.ghi_chu = notes.join('; ');
@@ -953,7 +1085,9 @@ function normalizeRow(r, date, fromAI){
     ma_hang: r.ma_hang || '', ten_hang: r.ten_hang || '',
     sl: r.sl ?? '', don_gia: r.don_gia ?? '', thanh_tien: r.thanh_tien ?? '',
     thanh_toan: isPaidText(r.thanh_toan) ? 'da_thanh_toan' : 'con_no',
-    ghi_chu: r.ghi_chu || ''
+    ghi_chu: r.ghi_chu || '',
+    _cot1: r._cot1 || '',
+    ...(r._src ? {_src: r._src} : {})
   });
   return fromAI ? fixAIRowPrice(row) : row;
 }
@@ -990,6 +1124,27 @@ window.removeThumb = removeThumb;
 //  ĐỌC ẢNH BẰNG AI
 // =====================================================================
 $('btn-process').addEventListener('click', processImages);
+
+// Lọc dòng AI tự bịa: bỏ dòng trống, bỏ chuỗi dòng giống hệt nhau lặp liên tiếp (AI bị "lặp vòng"),
+// đánh dấu cần kiểm tra các dòng không chép được nguyên văn từ sổ.
+function cleanAIRows(rows){
+  const has = v => v!=null && String(v).trim()!=='';
+  const out = []; let dropped = 0;
+  const sig = r=>JSON.stringify(['nguyen_van','ten_kh','cot1','cot2','cot3','ten_hang','sl','thanh_tien'].map(k=>String(pickField(r,k)??'').trim().toLowerCase()));
+  for(const r of rows){
+    const c1 = pickField(r,'cot1'), c2 = pickField(r,'cot2'), c3 = pickField(r,'cot3');
+    if(![c1,c2,c3,r.ten_hang,r.sl,r.thanh_tien,r.ten_kh].some(has)){ dropped++; continue; }
+    const s = sig(r);
+    // Cho phép 2 dòng giống nhau (sổ có thể ghi trùng thật), từ dòng thứ 3 liên tiếp trở đi coi là lặp.
+    if(out.length>=2 && sig(out[out.length-1])===s && sig(out[out.length-2])===s){ dropped++; continue; }
+    const r2 = Object.assign({}, r);
+    if(out.length && sig(out[out.length-1])===s) r2.ghi_chu = (r2.ghi_chu?r2.ghi_chu+'; ':'')+'cần kiểm tra: giống hệt dòng trên';
+    if(!has(pickField(r,'nguyen_van'))) r2.ghi_chu = (r2.ghi_chu?r2.ghi_chu+'; ':'')+'cần kiểm tra: AI không chép được nguyên văn dòng này, có thể không có trong sổ';
+    out.push(r2);
+  }
+  out.dropped = dropped;
+  return out;
+}
 async function processImages(){
   if(!settings.key){ setStatus('process-status','Chưa có khóa AI — vào tab Cài đặt để nhập.','err'); return; }
   const todo = selectedFiles.filter(s=>s.state!=='done');
@@ -1017,11 +1172,27 @@ async function processImages(){
   bar.firstElementChild.style.width='25%';
   setStatus('process-status', `Đang gửi ${ready.length} ảnh cho AI đọc cùng lúc (một lượt gọi)… có thể mất 20–90 giây.`);
   const prompt = buildPrompt(date, ready.length);
-  let rowsAdded = 0, errMsg = '';
+  let rowsAdded = 0, errMsg = '', dropped = 0, retried = false;
   try{
-    const text = await callAIWithFallback(settings, prompt, ready.map(r=>r.img), t=>setStatus('process-status', t));
+    const imgs = ready.map(r=>r.img);
+    let text = await callAIWithFallback(settings, prompt, imgs, t=>setStatus('process-status', t));
+    let rows = cleanAIRows(extractJSONArray(text));
+    if(rows.length===0){
+      // Trả về rỗng thường do AI "lười" khi tắt chế độ suy nghĩ → đọc lại một lần, cho phép suy nghĩ và nhắc kỹ hơn.
+      retried = true;
+      bar.firstElementChild.style.width='60%';
+      setStatus('process-status', 'AI trả về 0 dòng — đang đọc lại lần nữa kỹ hơn…');
+      text = await callAIWithFallback(Object.assign({}, settings, {_noThinkingCfg:true}),
+        prompt + '\n\nLƯU Ý: lần đọc trước bạn trả về danh sách rỗng. Ảnh này là trang sổ có chữ viết tay các dòng bán hàng — hãy nhìn kỹ từng dòng mực và trả về đầy đủ các dòng đó (vẫn không được bịa thêm dòng).',
+        imgs, t=>setStatus('process-status', t));
+      rows = cleanAIRows(extractJSONArray(text));
+    }
     bar.firstElementChild.style.width='90%';
-    const rows = extractJSONArray(text);
+    dropped = rows.dropped || 0;
+    if(rows.length===0){
+      const snip = String(text||'').replace(/\s+/g,' ').trim().slice(0,160);
+      throw new Error('AI không đọc được dòng nào trong ảnh (đã thử 2 lần). Kiểm tra ảnh có rõ, đủ sáng, chụp thẳng và đúng trang sổ không, rồi bấm "Đọc bằng AI" lại. Phản hồi của AI: '+(snip||'(trống)'));
+    }
     rows.forEach(r=>stagingRows.push(normalizeRow(mapAIRow(r), date, true)));
     rowsAdded = rows.length;
     ready.forEach(r=>r.s.state='done');
@@ -1038,7 +1209,7 @@ async function processImages(){
     const overloadHint = /quá tải|hết lượt dùng/.test(errMsg) ? ' Nếu vẫn liên tục quá tải hoặc hết lượt miễn phí, thử đổi mô hình/nhà cung cấp khác trong Cài đặt, chờ vài phút rồi bấm "Đọc bằng AI" lại (chỉ ảnh lỗi sẽ được gửi lại), hoặc dùng gói trả phí.' : '';
     setStatus('process-status', `Lỗi khi đọc ${ready.length} ảnh: ${errMsg}${badFiles.length?' | Ảnh không mở được: '+badFiles.join(' | '):''}${overloadHint}`, 'err');
   } else {
-    let msg = `Đã đọc được ${rowsAdded} dòng từ ${ready.length} ảnh (1 lượt gọi`+(lastUsage&&lastUsage.input?`, ${fmtVN(lastUsage.input)} token vào + ${fmtVN(lastUsage.output)} token ra`:'')+(lastModelUsed && lastModelUsed!==settings.model?`, dùng mô hình dự phòng ${lastModelUsed}`:'')+`) — vui lòng kiểm tra lại trước khi lưu.`;
+    let msg = `Đã đọc được ${rowsAdded} dòng từ ${ready.length} ảnh (1 lượt gọi`+(lastUsage&&lastUsage.input?`, ${fmtVN(lastUsage.input)} token vào + ${fmtVN(lastUsage.output)} token ra`:'')+(lastModelUsed && lastModelUsed!==settings.model?`, dùng mô hình dự phòng ${lastModelUsed}`:'')+(retried?', phải đọc lại 1 lần':'')+`) — vui lòng kiểm tra lại trước khi lưu.`+(dropped?` Đã bỏ ${dropped} dòng AI trả về nhưng trống hoặc lặp lại liên tiếp (có thể do AI tự bịa).`:'');
     if(badFiles.length) msg += ` Ảnh không mở được: ${badFiles.join(' | ')}.`;
     setStatus('process-status', msg, 'ok');
     selectedFiles.filter(s=>s.state==='done').forEach(s=>URL.revokeObjectURL(s.url));
@@ -1073,7 +1244,7 @@ function renderStaging(){
   const body = $('staging-body');
   if(stagingRows.length===0){ body.innerHTML = emptyRow(11, 'Chưa có dòng nào — tải ảnh lên và bấm "Đọc bằng AI", hoặc thêm dòng thủ công.'); return; }
   body.innerHTML = stagingRows.map((r,i)=>`
-    <tr class="${/kiểm tra/i.test(r.ghi_chu)?'need-check':''}">
+    <tr class="${/kiểm tra/i.test(r.ghi_chu)?'need-check':''}"${r._src?` title="Trong sổ: ${esc(r._src)}"`:''}>
       <td><input type="date" value="${esc(r.ngay)}" onchange="updStaging(${i},'ngay',this.value)"></td>
       <td><input type="text" value="${esc(r.ma_kh)}" onchange="updStaging(${i},'ma_kh',this.value)" style="width:56px;"></td>
       <td><input type="text" value="${esc(r.ten_kh)}" onchange="updStaging(${i},'ten_kh',this.value)"></td>
@@ -1126,7 +1297,7 @@ $('btn-clear-staging').addEventListener('click', ()=>{
 $('btn-save').addEventListener('click', async ()=>{
   if(stagingRows.length===0){ setStatus('save-status','Chưa có dòng nào để lưu.','err'); return; }
   const n = stagingRows.length;
-  stagingRows.forEach(r=>{ const {_id, ...data} = r; history.push({id:uid(), ...data, ngay:normDate(data.ngay), created_at:Date.now()}); });
+  stagingRows.forEach(r=>{ const {_id, _src, ...data} = r; history.push({id:uid(), ...data, ngay:normDate(data.ngay), created_at:Date.now()}); });
   try{
     await persist('transactions');
     stagingRows = []; renderStaging(); renderHistory();
@@ -1138,22 +1309,25 @@ $('btn-save').addEventListener('click', async ()=>{
 //  DANH MỤC
 // =====================================================================
 function renderCatalog(kind){
+  const del = (k,c,label)=>`<td><button class="icon-del" title="Xóa ${esc(label)}" onclick="delCatalog('${k}','${esc(c.id)}')">✕</button></td>`;
+  const inp = (k,c,f,extra)=>`<input type="text" value="${esc(c[f])}" onchange="updCatalog('${k}','${esc(c.id)}','${f}',this.value)"${extra||''}>`;
   if(kind==='customers'){
     sortByMa(customers,'ma');
     $('customers-body').innerHTML = customers.map(c=>
-      `<tr><td>${esc(c.ma)}</td><td>${esc(c.ten)}</td><td><button class="icon-del" onclick="delCatalog('customers','${c.id}')">✕</button></td></tr>`
+      `<tr><td>${inp('customers',c,'ma',' style="width:70px;"')}</td><td>${inp('customers',c,'ten',' placeholder="(chưa có tên)"')}</td>${del('customers',c,'khách hàng')}</tr>`
     ).join('') || emptyRow(3);
   } else if(kind==='products'){
     sortByMa(products,'ma');
     $('products-body').innerHTML = products.map(c=>
-      `<tr><td>${esc(c.ma)}</td><td>${esc(c.ten)}</td><td>${fmtVN(c.gia)}</td><td><button class="icon-del" onclick="delCatalog('products','${c.id}')">✕</button></td></tr>`
+      `<tr><td>${inp('products',c,'ma',' style="width:70px;"')}</td><td>${inp('products',c,'ten',' placeholder="(chưa có tên)"')}</td><td class="num"><input type="text" inputmode="decimal" value="${esc(fmtInput(c.gia))}" onchange="updCatalog('products','${esc(c.id)}','gia',this.value)" style="width:80px;"></td>${del('products',c,'mặt hàng')}</tr>`
     ).join('') || emptyRow(4);
   } else if(kind==='abbrs'){
     sortByMa(abbrs,'viet_tat');
     $('abbr-body').innerHTML = abbrs.map(c=>
-      `<tr><td>${esc(c.viet_tat)}</td><td>${esc(c.nghia)}</td><td><button class="icon-del" onclick="delCatalog('abbrs','${c.id}')">✕</button></td></tr>`
+      `<tr><td>${inp('abbrs',c,'viet_tat',' style="width:70px;"')}</td><td>${inp('abbrs',c,'nghia')}</td>${del('abbrs',c,'từ viết tắt')}</tr>`
     ).join('') || emptyRow(3);
   }
+  const clr = $('clear-'+kind); if(clr) clr.style.display = COLS[kind]().length ? '' : 'none';
 }
 async function addCatalogRow(kind){
   if(kind==='customers'){
@@ -1174,12 +1348,30 @@ async function addCatalogRow(kind){
   }
   await persist(kind); renderCatalog(kind);
 }
+// Sửa trực tiếp trong bảng danh mục (có thể xóa trắng tên).
+async function updCatalog(kind, id, field, val){
+  const x = COLS[kind]().find(x=>x.id===id); if(!x) return;
+  x[field] = field==='gia' ? (Number(parseLooseNum(val))||0) : String(val).trim();
+  await persist(kind);
+  if(field==='gia' || field==='ma' || field==='viet_tat') renderCatalog(kind);
+}
 async function delCatalog(kind, id){
   const list = COLS[kind]();
-  const i = list.findIndex(x=>x.id===id); if(i>=0) list.splice(i,1);
+  const i = list.findIndex(x=>x.id===id); if(i<0) return;
+  const x = list[i];
+  const label = kind==='abbrs' ? `${x.viet_tat} → ${x.nghia}` : `${x.ma} – ${x.ten||'(chưa có tên)'}`;
+  if(!confirm(`Xóa "${label}" khỏi danh mục?`)) return;
+  list.splice(i,1);
   await persist(kind); renderCatalog(kind);
 }
-window.addCatalogRow = addCatalogRow; window.delCatalog = delCatalog;
+async function clearCatalog(kind){
+  const list = COLS[kind](); if(!list.length) return;
+  const name = {customers:'khách hàng', products:'mặt hàng', abbrs:'từ viết tắt'}[kind];
+  if(!confirm(`Xóa toàn bộ ${list.length} ${name} trong danh mục? Không hoàn tác được.`)) return;
+  list.splice(0, list.length);
+  await persist(kind); renderCatalog(kind);
+}
+window.addCatalogRow = addCatalogRow; window.delCatalog = delCatalog; window.updCatalog = updCatalog; window.clearCatalog = clearCatalog;
 // Enter trong ô nhập = bấm Thêm
 [['abbr-new-name','abbrs'],['cust-new-name','customers'],['prod-new-price','products']].forEach(([id,kind])=>{
   $(id).addEventListener('keydown', e=>{ if(e.key==='Enter') addCatalogRow(kind); });
@@ -1635,7 +1827,7 @@ $('btn-staging-push').addEventListener('click', async ()=>{
   try{
     const remote = await fetchRemote();
     const cloud = Array.isArray(remote.staging) ? remote.staging : [];
-    const rows = stagingRows.map(({_id, ...r})=>({...r, ngay:normDate(r.ngay)}));
+    const rows = stagingRows.map(({_id, _src, ...r})=>({...r, ngay:normDate(r.ngay)}));
     await putRemote({...remote, staging: cloud.concat(rows)});
     stagingRows = []; renderStaging();
     setStatus('save-status', `Đã đẩy ${n} dòng lên đám mây (tổng ${cloud.length+n} dòng đang chờ). Trên máy khác, mở mục này và bấm "☁︎ Tải từ đám mây" để sửa tiếp rồi lưu vào lịch sử.`, 'ok');
