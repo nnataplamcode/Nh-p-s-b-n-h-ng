@@ -68,6 +68,9 @@
   .card h2{font-size:15px; margin:0 0 4px; font-weight:600;}
   .hint{color:var(--ink-dim); font-size:12.8px; margin:0 0 12px;}
   .row-flex{display:flex; gap:10px; flex-wrap:wrap; align-items:center;}
+  /* Ẩn mũi tên tăng/giảm ở ô số: chỉ sửa bằng cách gõ */
+  input[type="number"]{-moz-appearance:textfield; appearance:textfield;}
+  input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button{-webkit-appearance:none; margin:0;}
   input[type="date"], input[type="text"], input[type="number"]{
     background:var(--paper); border:1px solid var(--border); color:var(--ink);
     border-radius:6px; padding:7px 9px; font-size:13.5px; font-family:inherit;
@@ -512,7 +515,9 @@ const KEY_HELP = {
 
 const $ = id=>document.getElementById(id);
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
-function fmtVN(n){ n=Number(n)||0; return n.toLocaleString('vi-VN'); }
+function fmtVN(n){ n=Number(n)||0; return n.toLocaleString('en-US', {maximumFractionDigits:2}); }  // 50000 → 50,000
+// Ô nhập số: hiển thị 50,000; để trống nếu chưa có số.
+function fmtInput(v){ return (v===''||v==null||isNaN(Number(v))) ? (v??'') : fmtVN(v); }
 function todayISO(){ const d=new Date(); d.setMinutes(d.getMinutes()-d.getTimezoneOffset()); return d.toISOString().slice(0,10); }
 function esc(s){ return (s??'').toString().replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 function emptyRow(cols, text){ return `<tr><td colspan="${cols}" class="empty">${text||'Chưa có dữ liệu'}</td></tr>`; }
@@ -811,7 +816,8 @@ function imageToBase64(file, maxSide=1536){
 function buildPrompt(date, pageCount){
   const abbrText = abbrs.map(a=>`${a.viet_tat} = ${a.nghia}`).join('\n') || '(chưa có)';
   const custText = customers.map(c=>`${c.ma} = ${c.ten}`).join('\n') || '(chưa có)';
-  const prodText = products.map(p=>`${p.ma} = ${p.ten}`+(p.gia?` | ${p.gia}`:'')).join('\n') || '(chưa có)';
+  // Không gửi đơn giá cho AI: sổ không ghi đơn giá, gửi vào chỉ khiến AI tự suy/bịa ra số.
+  const prodText = products.map(p=>`${p.ma} = ${p.ten}`).join('\n') || '(chưa có)';
   const intro = pageCount>1
     ? `Đây là ${pageCount} ảnh chụp các trang sổ ghi chép bán hàng viết tay bằng tiếng Việt (có thể là các trang/ngày khác nhau, xử lý lần lượt theo đúng thứ tự ảnh được gửi). Hãy đọc TỪNG ảnh và trích ra toàn bộ dòng giao dịch của tất cả các ảnh, gộp chung vào một danh sách kết quả duy nhất.`
     : `Đây là ảnh chụp một trang sổ ghi chép bán hàng viết tay bằng tiếng Việt. Hãy đọc và trích ra từng dòng giao dịch.`;
@@ -820,13 +826,17 @@ Quy ước trong sổ:
 - Dấu "+" đứng trước tên/mã khách hàng nghĩa là khách còn NỢ (chưa thanh toán).
 - Dấu "+" bên trong vòng tròn (⊕, trông giống dấu cộng khoanh tròn) nghĩa là khách ĐÃ THANH TOÁN.
 - Chữ trong ngoặc () là các mặt hàng gộp chung của một khách mua nhiều món trong một lượt.
-- Mỗi dòng hàng trong sổ gồm 3 cột theo thứ tự từ trái sang phải:
-  + Cột 1: TÊN HÀNG (có thể viết tắt).
-  + Cột 2: SỐ LƯỢNG hàng bán → trường "sl".
-  + Cột 3: THÀNH TIỀN (tổng số tiền của cả dòng) → trường "thanh_tien".
-  Cột 3 KHÔNG PHẢI đơn giá. Tuyệt đối không nhân cột 2 với cột 3. Sổ không ghi đơn giá, nên để trống "don_gia" (phần mềm tự tính đơn giá = thành tiền / số lượng).
-- Nếu một dòng chỉ có tên hàng và một con số, con số đó là thành tiền; để trống số lượng và ghi "cần kiểm tra" trong "ghi_chu".
-- Số tiền thường viết tắt theo nghìn (VD "750" hoặc "750k" = 750000). Hãy quy đổi ra đồng.
+- Trang sổ kẻ thành các cột dọc, đọc theo VỊ TRÍ cột từ trái sang phải:
+  + Cột 1: tên hàng (thường viết tắt, VD "TT").
+  + Cột 2: một con số.
+  + Cột 3: một con số.
+  + Cột 4 (có thể không có): chữ ghi chú ngắn, VD "CK".
+  Ví dụ dòng "TT | 50 | 200 | CK" → cot1="TT", cot2=50, cot3=200, cot4="CK".
+  Chỉ CHÉP LẠI đúng những gì viết ở mỗi cột (dạng chuỗi, giữ cả chữ cái viết liền sau số), không tính toán, không quy đổi, không đổi chỗ cột 2 với cột 3, không tự thêm số nào không có trong sổ.
+- Cột 2 đôi khi viết kèm chữ "q" (quả) sau số, VD "30q" = 30 quả. Chữ "q" viết tay rất giống số 9: nếu sau số lượng có ký tự giống "q"/"9" viết tách hoặc có đuôi khác các chữ số trước, hãy chép là "30q", KHÔNG đọc thành "309".
+- Cột 3 đôi khi viết kèm chữ "k" sau số, VD "100k" → chép "100k".
+- Nếu một dòng chỉ có tên hàng và một con số, xem con số nằm dưới cột nào (so với các dòng khác) để điền vào cot2 hoặc cot3, ô còn lại để trống, và ghi "cần kiểm tra" trong "ghi_chu".
+- Bỏ qua các nét mờ, nhòe hoặc chữ in ngược do trang bên kia hằn sang; chỉ đọc nét mực rõ của trang này.
 - Nếu trang không ghi ngày rõ ràng, hoặc ảnh không đủ căn cứ để biết ngày khác, dùng ngày mặc định "${date}".
 
 Bảng từ viết tắt (viết tắt = ý nghĩa đầy đủ, dùng để dịch tên hàng):
@@ -839,7 +849,7 @@ Danh sách mã hàng đã có (mã = tên | đơn giá mặc định):
 ${prodText}
 
 Với mỗi dòng giao dịch đọc được (từ tất cả các ảnh gộp lại), trả về một object có các trường:
-ngay (định dạng YYYY-MM-DD), ma_kh (mã khách hàng nếu khớp được với danh sách trên, để trống nếu không rõ), ten_kh (tên khách hàng như viết trong sổ), ma_hang (mã hàng nếu khớp được, để trống nếu không rõ), ten_hang (tên hàng đầy đủ sau khi dịch viết tắt), sl (số lượng = cột 2, số), don_gia (luôn để trống ""), thanh_tien (thành tiền = cột 3, số, giữ nguyên số ghi trong sổ đã quy đổi ra đồng), thanh_toan ("da_thanh_toan" hoặc "con_no"), ghi_chu (ghi chú, ví dụ "cần kiểm tra" nếu không chắc chắn).
+ngay (định dạng YYYY-MM-DD), ma_kh (mã khách hàng nếu khớp được với danh sách trên, để trống nếu không rõ), ten_kh (tên khách hàng như viết trong sổ), ma_hang (mã hàng nếu khớp được, để trống nếu không rõ), cot1 (chữ ở cột 1, chép nguyên như trong sổ), ten_hang (tên hàng đầy đủ sau khi dịch cot1 theo bảng viết tắt), cot2 (chuỗi chép nguyên ở cột 2, VD "50" hoặc "30q", để trống nếu không có), cot3 (chuỗi chép nguyên ở cột 3, VD "200" hoặc "100k", để trống nếu không có), cot4 (chữ ở cột 4, để trống nếu không có), thanh_toan ("da_thanh_toan" hoặc "con_no"), ghi_chu (ghi chú, ví dụ "cần kiểm tra" nếu không chắc chắn).
 
 Chỉ trả về DUY NHẤT một JSON array các object trên, không thêm chữ giải thích nào khác, không bọc trong object khác. Nếu một khách mua nhiều mặt hàng, tách thành nhiều dòng riêng, mỗi dòng vẫn giữ đúng mã KH và trạng thái thanh toán của khách đó. Nếu không có giao dịch nào, trả về [].`;
 }
@@ -860,6 +870,69 @@ function enrichRow(r){
     const t = Number(r.sl)*Number(r.don_gia); if(t) r.thanh_tien = t;
   }
   return r;
+}
+
+// Đọc số viết tay/AI trả về: "1,500", "1.500", "750k", "30q", "2,5", "80." …
+function parseLooseNum(v){
+  if(v==null || v==='') return '';
+  if(typeof v==='number') return isFinite(v) ? v : '';
+  let t = String(v).trim().toLowerCase().replace(/\s/g,'');
+  const tr = t.match(/^(\d+)(?:tr|triệu|trieu)(\d{1,3})?$/);                    // "1tr2" = 1,200,000
+  if(tr) return Number(tr[1])*1000000 + (tr[2] ? Number(tr[2].padEnd(3,'0'))*1000 : 0);
+  const m = t.match(/\d[\d.,]*/);
+  if(!m) return '';
+  let num = m[0].replace(/[.,]$/,'');
+  const unit = t.slice(m.index + m[0].length);
+  if(/^\d{1,3}([.,]\d{3})+$/.test(num)) num = num.replace(/[.,]/g,'');   // 1,500 / 1.500 / 1,200,000
+  else num = num.replace(',','.');                                        // 2,5 → 2.5
+  const n = Number(num);
+  if(!isFinite(n)) return '';
+  if(/^(k|nghìn|nghin|ng)/.test(unit)) return n*1000;
+  if(/^(tr|triệu|trieu|m)/.test(unit)) return n*1000000;
+  return n;
+}
+
+// Tiền trong sổ ghi theo nghìn: "200" = 200,000đ, "100k" = 100,000đ.
+// Số từ 10,000 trở lên coi như đã ghi đủ đồng (hoặc AI đã tự quy đổi).
+function moneyFromBook(v){
+  const n = parseLooseNum(v);
+  if(n==='') return '';
+  return n < 10000 ? Math.round(n*1000) : n;
+}
+
+// Lấy trường theo tên, chấp nhận AI viết lệch "cot_3", "Cot3", "cột 3".
+function pickField(r, name){
+  const want = stripAccents(name).toLowerCase().replace(/[\s_]/g,'');
+  for(const k of Object.keys(r)){
+    if(stripAccents(k).toLowerCase().replace(/[\s_]/g,'')===want) return r[k];
+  }
+  return undefined;
+}
+
+// "30q" viết tay hay bị đọc thành "309". Nếu số lượng tận cùng bằng 9 cho đơn giá lẻ,
+// còn bỏ số 9 đi thì đơn giá tròn (bội số 100) → sửa và đánh dấu cần kiểm tra.
+function fixQReadAs9(sl, tt){
+  if(!(sl>=109 && tt>0) || sl%10!==9) return null;   // chỉ xét số 3 chữ số trở lên, VD 309 ← 30q
+  const alt = (sl-9)/10;
+  if(alt>0 && (tt/sl)%100!==0 && (tt/alt)%100===0) return alt;
+  return null;
+}
+
+// AI chỉ chép số theo vị trí cột; phần mềm tự gán: cột 2 = số lượng, cột 3 = thành tiền, cột 4 = ghi chú.
+function mapAIRow(r){
+  const has = v => v!=null && v!=='';
+  const c1 = pickField(r,'cot1'), c2 = pickField(r,'cot2'), c3 = pickField(r,'cot3'), c4 = pickField(r,'cot4');
+  const out = Object.assign({}, r);
+  const notes = [];
+  out.sl = parseLooseNum(has(c2) ? c2 : r.sl);
+  out.thanh_tien = moneyFromBook(has(c3) ? c3 : r.thanh_tien);
+  const alt = fixQReadAs9(Number(out.sl), Number(out.thanh_tien));
+  if(alt!=null){ notes.push(`cần kiểm tra: SL đọc "${out.sl}", có thể là "${alt}q"`); out.sl = alt; }
+  if(!out.ten_hang && has(c1)) out.ten_hang = c1;
+  if(has(c4)) notes.unshift(String(c4).trim());
+  if(out.ghi_chu) notes.push(out.ghi_chu);
+  out.ghi_chu = notes.join('; ');
+  return out;
 }
 
 // Dòng do AI đọc ảnh: cột 3 trong sổ là THÀNH TIỀN, nên đơn giá luôn = thành tiền / số lượng.
@@ -949,7 +1022,7 @@ async function processImages(){
     const text = await callAIWithFallback(settings, prompt, ready.map(r=>r.img), t=>setStatus('process-status', t));
     bar.firstElementChild.style.width='90%';
     const rows = extractJSONArray(text);
-    rows.forEach(r=>stagingRows.push(normalizeRow(r, date, true)));
+    rows.forEach(r=>stagingRows.push(normalizeRow(mapAIRow(r), date, true)));
     rowsAdded = rows.length;
     ready.forEach(r=>r.s.state='done');
   }catch(e){
@@ -1006,9 +1079,9 @@ function renderStaging(){
       <td><input type="text" value="${esc(r.ten_kh)}" onchange="updStaging(${i},'ten_kh',this.value)"></td>
       <td><input type="text" value="${esc(r.ma_hang)}" onchange="updStaging(${i},'ma_hang',this.value)" style="width:56px;"></td>
       <td><input type="text" value="${esc(r.ten_hang)}" onchange="updStaging(${i},'ten_hang',this.value)"></td>
-      <td class="num"><input type="number" value="${esc(r.sl)}" onchange="updStaging(${i},'sl',this.value)" style="width:56px;"></td>
-      <td class="num"><input type="number" value="${esc(r.don_gia)}" onchange="updStaging(${i},'don_gia',this.value)" style="width:76px;"></td>
-      <td class="num"><input type="number" value="${esc(r.thanh_tien)}" onchange="updStaging(${i},'thanh_tien',this.value)" style="width:86px;"></td>
+      <td class="num"><input type="text" inputmode="decimal" value="${esc(fmtInput(r.sl))}" onchange="updStaging(${i},'sl',this.value)" style="width:70px; text-align:right;"></td>
+      <td class="num"><input type="text" inputmode="decimal" value="${esc(fmtInput(r.don_gia))}" onchange="updStaging(${i},'don_gia',this.value)" style="width:90px; text-align:right;"></td>
+      <td class="num"><input type="text" inputmode="decimal" value="${esc(fmtInput(r.thanh_tien))}" onchange="updStaging(${i},'thanh_tien',this.value)" style="width:100px; text-align:right;"></td>
       <td><select class="${r.thanh_toan==='da_thanh_toan'?'status-paid':'status-debt'}" onchange="updStaging(${i},'thanh_toan',this.value)">
         <option value="con_no" ${r.thanh_toan==='con_no'?'selected':''}>Còn nợ</option>
         <option value="da_thanh_toan" ${r.thanh_toan==='da_thanh_toan'?'selected':''}>Đã thanh toán</option>
@@ -1019,9 +1092,12 @@ function renderStaging(){
   `).join('');
 }
 function updStaging(i, field, val){
-  const r = stagingRows[i]; r[field] = val;
+  const r = stagingRows[i];
+  if(field==='sl' || field==='don_gia' || field==='thanh_tien') val = parseLooseNum(val);
+  r[field] = val;
   if((field==='sl' || field==='don_gia') && r.sl!=='' && r.don_gia!==''){
     r.thanh_tien = Number(r.sl)*Number(r.don_gia); renderStaging();
+  } else if(field==='thanh_tien'){ renderStaging();
   } else if(field==='ma_hang'){
     const p = products.find(p=>p.ma===val);
     if(p){ r.ten_hang = p.ten; if(r.don_gia==='') r.don_gia = p.gia; renderStaging(); }
@@ -1207,6 +1283,7 @@ function rowsToSheetData(rows){
 }
 function exportSheet(data, cols, sheetName, filename){
   const ws = XLSX.utils.json_to_sheet(data); ws['!cols'] = cols;
+  Object.keys(ws).forEach(k=>{ if(k[0]!=='!' && ws[k].t==='n') ws[k].z = '#,##0'; });   // 50000 → 50,000
   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, sheetName);
   downloadBlob(new Blob([XLSX.write(wb, {type:'array', bookType:'xlsx'})], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), filename);
 }
