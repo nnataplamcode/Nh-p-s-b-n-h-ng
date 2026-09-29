@@ -811,7 +811,8 @@ function imageToBase64(file, maxSide=1536){
 function buildPrompt(date, pageCount){
   const abbrText = abbrs.map(a=>`${a.viet_tat} = ${a.nghia}`).join('\n') || '(chưa có)';
   const custText = customers.map(c=>`${c.ma} = ${c.ten}`).join('\n') || '(chưa có)';
-  const prodText = products.map(p=>`${p.ma} = ${p.ten}`+(p.gia?` | ${p.gia}`:'')).join('\n') || '(chưa có)';
+  // Không gửi đơn giá cho AI: sổ không ghi đơn giá, gửi vào chỉ khiến AI tự suy/bịa ra số.
+  const prodText = products.map(p=>`${p.ma} = ${p.ten}`).join('\n') || '(chưa có)';
   const intro = pageCount>1
     ? `Đây là ${pageCount} ảnh chụp các trang sổ ghi chép bán hàng viết tay bằng tiếng Việt (có thể là các trang/ngày khác nhau, xử lý lần lượt theo đúng thứ tự ảnh được gửi). Hãy đọc TỪNG ảnh và trích ra toàn bộ dòng giao dịch của tất cả các ảnh, gộp chung vào một danh sách kết quả duy nhất.`
     : `Đây là ảnh chụp một trang sổ ghi chép bán hàng viết tay bằng tiếng Việt. Hãy đọc và trích ra từng dòng giao dịch.`;
@@ -820,13 +821,15 @@ Quy ước trong sổ:
 - Dấu "+" đứng trước tên/mã khách hàng nghĩa là khách còn NỢ (chưa thanh toán).
 - Dấu "+" bên trong vòng tròn (⊕, trông giống dấu cộng khoanh tròn) nghĩa là khách ĐÃ THANH TOÁN.
 - Chữ trong ngoặc () là các mặt hàng gộp chung của một khách mua nhiều món trong một lượt.
-- Mỗi dòng hàng trong sổ gồm 3 cột theo thứ tự từ trái sang phải:
-  + Cột 1: TÊN HÀNG (có thể viết tắt).
-  + Cột 2: SỐ LƯỢNG hàng bán → trường "sl".
-  + Cột 3: THÀNH TIỀN (tổng số tiền của cả dòng) → trường "thanh_tien".
-  Cột 3 KHÔNG PHẢI đơn giá. Tuyệt đối không nhân cột 2 với cột 3. Sổ không ghi đơn giá, nên để trống "don_gia" (phần mềm tự tính đơn giá = thành tiền / số lượng).
-- Nếu một dòng chỉ có tên hàng và một con số, con số đó là thành tiền; để trống số lượng và ghi "cần kiểm tra" trong "ghi_chu".
-- Số tiền thường viết tắt theo nghìn (VD "750" hoặc "750k" = 750000). Hãy quy đổi ra đồng.
+- Trang sổ kẻ thành các cột dọc, đọc theo VỊ TRÍ cột từ trái sang phải:
+  + Cột 1: tên hàng (thường viết tắt, VD "TT").
+  + Cột 2: một con số.
+  + Cột 3: một con số.
+  + Cột 4 (có thể không có): chữ ghi chú ngắn, VD "CK".
+  Ví dụ dòng "TT | 50 | 200 | CK" → cot1="TT", cot2=50, cot3=200, cot4="CK".
+  Chỉ CHÉP LẠI đúng con số viết ở mỗi cột, không tính toán, không quy đổi, không đổi chỗ cột 2 với cột 3, không tự thêm số nào không có trong sổ.
+- Nếu một dòng chỉ có tên hàng và một con số, xem con số nằm dưới cột nào (so với các dòng khác) để điền vào cot2 hoặc cot3, ô còn lại để trống, và ghi "cần kiểm tra" trong "ghi_chu".
+- Bỏ qua các nét mờ, nhòe hoặc chữ in ngược do trang bên kia hằn sang; chỉ đọc nét mực rõ của trang này.
 - Nếu trang không ghi ngày rõ ràng, hoặc ảnh không đủ căn cứ để biết ngày khác, dùng ngày mặc định "${date}".
 
 Bảng từ viết tắt (viết tắt = ý nghĩa đầy đủ, dùng để dịch tên hàng):
@@ -839,7 +842,7 @@ Danh sách mã hàng đã có (mã = tên | đơn giá mặc định):
 ${prodText}
 
 Với mỗi dòng giao dịch đọc được (từ tất cả các ảnh gộp lại), trả về một object có các trường:
-ngay (định dạng YYYY-MM-DD), ma_kh (mã khách hàng nếu khớp được với danh sách trên, để trống nếu không rõ), ten_kh (tên khách hàng như viết trong sổ), ma_hang (mã hàng nếu khớp được, để trống nếu không rõ), ten_hang (tên hàng đầy đủ sau khi dịch viết tắt), sl (số lượng = cột 2, số), don_gia (luôn để trống ""), thanh_tien (thành tiền = cột 3, số, giữ nguyên số ghi trong sổ đã quy đổi ra đồng), thanh_toan ("da_thanh_toan" hoặc "con_no"), ghi_chu (ghi chú, ví dụ "cần kiểm tra" nếu không chắc chắn).
+ngay (định dạng YYYY-MM-DD), ma_kh (mã khách hàng nếu khớp được với danh sách trên, để trống nếu không rõ), ten_kh (tên khách hàng như viết trong sổ), ma_hang (mã hàng nếu khớp được, để trống nếu không rõ), cot1 (chữ ở cột 1, chép nguyên như trong sổ), ten_hang (tên hàng đầy đủ sau khi dịch cot1 theo bảng viết tắt), cot2 (số ở cột 2, chép nguyên, để trống nếu không có), cot3 (số ở cột 3, chép nguyên, để trống nếu không có), cot4 (chữ ở cột 4, để trống nếu không có), thanh_toan ("da_thanh_toan" hoặc "con_no"), ghi_chu (ghi chú, ví dụ "cần kiểm tra" nếu không chắc chắn).
 
 Chỉ trả về DUY NHẤT một JSON array các object trên, không thêm chữ giải thích nào khác, không bọc trong object khác. Nếu một khách mua nhiều mặt hàng, tách thành nhiều dòng riêng, mỗi dòng vẫn giữ đúng mã KH và trạng thái thanh toán của khách đó. Nếu không có giao dịch nào, trả về [].`;
 }
@@ -860,6 +863,39 @@ function enrichRow(r){
     const t = Number(r.sl)*Number(r.don_gia); if(t) r.thanh_tien = t;
   }
   return r;
+}
+
+// Đọc số AI trả về (có thể là chuỗi "1.500", "750k", "2,5").
+function parseLooseNum(v){
+  if(v==null || v==='') return '';
+  if(typeof v==='number') return isFinite(v) ? v : '';
+  let t = String(v).trim().toLowerCase().replace(/\s|đ|vnđ|vnd/g,'');
+  let mul = 1;
+  if(/k$/.test(t)){ mul = 1000; t = t.slice(0,-1); }
+  if(/^\d{1,3}([.,]\d{3})+$/.test(t)) t = t.replace(/[.,]/g,'');
+  else t = t.replace(',','.');
+  const n = Number(t);
+  return isFinite(n) && t!=='' ? n*mul : '';
+}
+
+// Tiền trong sổ ghi theo nghìn (200 = 200.000đ); số từ 10.000 trở lên coi như đã ghi đủ đồng.
+function moneyFromBook(v){
+  const n = parseLooseNum(v);
+  if(n==='' ) return '';
+  return n < 10000 ? Math.round(n*1000) : n;
+}
+
+// AI chỉ chép số theo vị trí cột; phần mềm tự gán: cột 2 = số lượng, cột 3 = thành tiền, cột 4 = ghi chú.
+function mapAIRow(r){
+  const has = k => r[k]!=null && r[k]!=='';
+  const out = Object.assign({}, r);
+  if(has('cot2') || has('cot3')){
+    out.sl = parseLooseNum(r.cot2);
+    out.thanh_tien = moneyFromBook(r.cot3);
+  }
+  if(!out.ten_hang && has('cot1')) out.ten_hang = r.cot1;
+  if(has('cot4')) out.ghi_chu = [String(r.cot4).trim(), out.ghi_chu].filter(Boolean).join('; ');
+  return out;
 }
 
 // Dòng do AI đọc ảnh: cột 3 trong sổ là THÀNH TIỀN, nên đơn giá luôn = thành tiền / số lượng.
@@ -949,7 +985,7 @@ async function processImages(){
     const text = await callAIWithFallback(settings, prompt, ready.map(r=>r.img), t=>setStatus('process-status', t));
     bar.firstElementChild.style.width='90%';
     const rows = extractJSONArray(text);
-    rows.forEach(r=>stagingRows.push(normalizeRow(r, date, true)));
+    rows.forEach(r=>stagingRows.push(normalizeRow(mapAIRow(r), date, true)));
     rowsAdded = rows.length;
     ready.forEach(r=>r.s.state='done');
   }catch(e){
