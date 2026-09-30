@@ -875,7 +875,7 @@ Quy ước trong sổ:
   Chỉ CHÉP LẠI đúng những gì viết ở mỗi cột (dạng chuỗi, giữ cả chữ cái viết liền sau số), không tính toán, không quy đổi, không đổi chỗ cột 2 với cột 3, không tự thêm số nào không có trong sổ.
 - Cột 2 đôi khi viết kèm chữ "q" (quả) sau số, VD "30q" = 30 quả. Chữ "q" viết tay rất giống số 9: nếu sau số lượng có ký tự giống "q"/"9" viết tách hoặc có đuôi khác các chữ số trước, hãy chép là "30q", KHÔNG đọc thành "309".
 - Cột 3 đôi khi viết kèm chữ "k" sau số, VD "100k" → chép "100k".
-- Nếu một dòng chỉ có tên hàng và một con số, xem con số nằm dưới cột nào (so với các dòng khác) để điền vào cot2 hoặc cot3, ô còn lại để trống, và ghi "cần kiểm tra" trong "ghi_chu".
+- Nếu một dòng chỉ có tên hàng và MỘT con số (cột số lượng bỏ trống, VD "Bưởi | (trống) | 50"), con số đó thường là THÀNH TIỀN → chép vào cot3, để trống cot2. Chỉ chép vào cot2 khi số đó có chữ "q" (VD "30q") hoặc nằm rõ ràng dưới cột 2.
 - Bỏ qua các nét mờ, nhòe hoặc chữ in ngược do trang bên kia hằn sang; chỉ đọc nét mực rõ của trang này.
 - Nếu trang không ghi ngày rõ ràng, hoặc ảnh không đủ căn cứ để biết ngày khác, dùng ngày mặc định "${date}".
 
@@ -995,6 +995,9 @@ function enrichRow(r){
     if(p){ r.ma_hang = p.ma; if(r.don_gia==='' || r.don_gia==null) r.don_gia = p.gia || ''; }
   }
   delete r._cot1;
+  if((r.sl==='' || r.sl==null) && Number(r.thanh_tien)>0 && Number(r.don_gia)>0 && Number(r.thanh_tien)%Number(r.don_gia)===0){
+    r.sl = Number(r.thanh_tien)/Number(r.don_gia);
+  }
   if((r.thanh_tien==='' || r.thanh_tien==null) && r.sl!=='' && r.don_gia!=='' ){
     const t = Number(r.sl)*Number(r.don_gia); if(t) r.thanh_tien = t;
   }
@@ -1053,8 +1056,14 @@ function mapAIRow(r){
   const c1 = pickField(r,'cot1'), c2 = pickField(r,'cot2'), c3 = pickField(r,'cot3'), c4 = pickField(r,'cot4');
   const out = Object.assign({}, r);
   const notes = [];
-  out.sl = parseLooseNum(has(c2) ? c2 : r.sl);
-  out.thanh_tien = moneyFromBook(has(c3) ? c3 : r.thanh_tien);
+  let v2 = has(c2) ? c2 : r.sl, v3 = has(c3) ? c3 : r.thanh_tien;
+  // Dòng chỉ có MỘT số (VD "Bưởi | trống | 50"): số đó là thành tiền, trừ khi viết kèm "q" (quả) thì là số lượng.
+  if(has(v2) && !has(v3) && !/\d\s*q/i.test(String(v2))){
+    v3 = v2; v2 = '';
+    notes.push('cần kiểm tra: dòng chỉ có 1 số, đã hiểu là thành tiền');
+  }
+  out.sl = parseLooseNum(v2);
+  out.thanh_tien = moneyFromBook(v3);
   const alt = fixQReadAs9(Number(out.sl), Number(out.thanh_tien));
   if(alt!=null){ notes.push(`cần kiểm tra: SL đọc "${out.sl}", có thể là "${alt}q"`); out.sl = alt; }
   if(!out.ten_hang && has(c1)) out.ten_hang = c1;
@@ -1168,54 +1177,83 @@ async function processImages(){
     return;
   }
 
-  // Bước 2: gộp toàn bộ ảnh vào MỘT lần gọi AI duy nhất (tiết kiệm lượt gọi, đỡ bị giới hạn/quota).
-  bar.firstElementChild.style.width='25%';
-  setStatus('process-status', `Đang gửi ${ready.length} ảnh cho AI đọc cùng lúc (một lượt gọi)… có thể mất 20–90 giây.`);
-  const prompt = buildPrompt(date, ready.length);
-  let rowsAdded = 0, errMsg = '', dropped = 0, retried = false;
-  try{
-    const imgs = ready.map(r=>r.img);
-    let text = await callAIWithFallback(settings, prompt, imgs, t=>setStatus('process-status', t));
-    let rows = cleanAIRows(extractJSONArray(text));
-    if(rows.length===0){
-      // Trả về rỗng thường do AI "lười" khi tắt chế độ suy nghĩ → đọc lại một lần, cho phép suy nghĩ và nhắc kỹ hơn.
-      retried = true;
-      bar.firstElementChild.style.width='60%';
-      setStatus('process-status', 'AI trả về 0 dòng — đang đọc lại lần nữa kỹ hơn…');
-      text = await callAIWithFallback(Object.assign({}, settings, {_noThinkingCfg:true}),
-        prompt + '\n\nLƯU Ý: lần đọc trước bạn trả về danh sách rỗng. Ảnh này là trang sổ có chữ viết tay các dòng bán hàng — hãy nhìn kỹ từng dòng mực và trả về đầy đủ các dòng đó (vẫn không được bịa thêm dòng).',
-        imgs, t=>setStatus('process-status', t));
-      rows = cleanAIRows(extractJSONArray(text));
+  // Bước 2: mỗi ảnh một lượt gọi AI riêng. Gộp nhiều ảnh vào một lượt khiến AI hay đọc sót
+  // (VD gửi 6 ảnh chỉ đọc được 3–4 ảnh) vì câu trả lời quá dài; đọc riêng từng ảnh thì ảnh nào lỗi
+  // chỉ cần đọc lại ảnh đó, các ảnh đã đọc xong vẫn giữ kết quả.
+  const prompt = buildPrompt(date, 1);
+  let rowsAdded = 0, dropped = 0, retried = 0, tokIn = 0, tokOut = 0;
+  const fails = [], perImage = [];
+  for(let k=0; k<ready.length; k++){
+    const {s, img} = ready[k];
+    const tag = ready.length>1 ? `Ảnh ${k+1}/${ready.length}` : 'Ảnh';
+    const onStatus = t=>setStatus('process-status', `${tag}: ${t}`);
+    bar.firstElementChild.style.width = Math.round(10 + 88*k/ready.length)+'%';
+    setStatus('process-status', `${tag}: đang gửi cho AI đọc… (mỗi ảnh khoảng 10–40 giây)`);
+    try{
+      let text = await callAIWithFallback(settings, prompt, [img], onStatus);
+      const addTok = ()=>{ if(lastUsage){ tokIn += lastUsage.input||0; tokOut += lastUsage.output||0; } };
+      addTok();
+      let rows = cleanAIRows(extractJSONArray(text));
+      if(rows.length===0){
+        // Trả về rỗng thường do AI "lười" khi tắt chế độ suy nghĩ → đọc lại một lần, cho phép suy nghĩ và nhắc kỹ hơn.
+        retried++;
+        onStatus('AI trả về 0 dòng — đang đọc lại lần nữa kỹ hơn…');
+        text = await callAIWithFallback(Object.assign({}, settings, {_noThinkingCfg:true}),
+          prompt + '\n\nLƯU Ý: lần đọc trước bạn trả về danh sách rỗng. Ảnh này là trang sổ có chữ viết tay các dòng bán hàng — hãy nhìn kỹ từng dòng mực và trả về đầy đủ các dòng đó (vẫn không được bịa thêm dòng).',
+          [img], onStatus);
+        addTok();
+        rows = cleanAIRows(extractJSONArray(text));
+      }
+      dropped += rows.dropped || 0;
+      if(rows.length===0){
+        const snip = String(text||'').replace(/\s+/g,' ').trim().slice(0,120);
+        throw new Error('AI không đọc được dòng nào (đã thử 2 lần) — kiểm tra ảnh có rõ, đủ sáng, chụp thẳng không. Phản hồi của AI: '+(snip||'(trống)'));
+      }
+      rows.forEach(r=>{
+        const row = normalizeRow(mapAIRow(r), date, true);
+        if(ready.length>1) row._src = `[ảnh ${k+1}] ` + (row._src||'');
+        stagingRows.push(row);
+      });
+      rowsAdded += rows.length; perImage.push(`ảnh ${k+1}: ${rows.length}`);
+      s.state = 'done';
+      renderStaging();
+    }catch(e){
+      s.state = 'fail';
+      fails.push(`${tag} (${s.file.name}): ${e.message}`);
+      perImage.push(`ảnh ${k+1}: lỗi`);
+      // Lỗi khóa / chưa nạp tiền / hết lượt trong ngày: các ảnh sau cũng sẽ lỗi y hệt → dừng luôn.
+      if(!e.canSwitch && !/không đọc được dòng nào|không đúng định dạng/.test(e.message)){
+        for(let j=k+1; j<ready.length; j++){ ready[j].s.state='fail'; }
+        if(k+1<ready.length) fails.push(`Dừng, chưa đọc ${ready.length-k-1} ảnh còn lại.`);
+        renderThumbs();
+        break;
+      }
     }
-    bar.firstElementChild.style.width='90%';
-    dropped = rows.dropped || 0;
-    if(rows.length===0){
-      const snip = String(text||'').replace(/\s+/g,' ').trim().slice(0,160);
-      throw new Error('AI không đọc được dòng nào trong ảnh (đã thử 2 lần). Kiểm tra ảnh có rõ, đủ sáng, chụp thẳng và đúng trang sổ không, rồi bấm "Đọc bằng AI" lại. Phản hồi của AI: '+(snip||'(trống)'));
-    }
-    rows.forEach(r=>stagingRows.push(normalizeRow(mapAIRow(r), date, true)));
-    rowsAdded = rows.length;
-    ready.forEach(r=>r.s.state='done');
-  }catch(e){
-    errMsg = e.message;
-    ready.forEach(r=>r.s.state='fail');
+    renderThumbs();
   }
-  renderThumbs(); renderStaging();
+  renderStaging();
   btn.disabled = false;
   bar.firstElementChild.style.width='100%';
   setTimeout(()=>{ bar.style.display='none'; }, 600);
 
-  if(errMsg){
-    const overloadHint = /quá tải|hết lượt dùng/.test(errMsg) ? ' Nếu vẫn liên tục quá tải hoặc hết lượt miễn phí, thử đổi mô hình/nhà cung cấp khác trong Cài đặt, chờ vài phút rồi bấm "Đọc bằng AI" lại (chỉ ảnh lỗi sẽ được gửi lại), hoặc dùng gói trả phí.' : '';
-    setStatus('process-status', `Lỗi khi đọc ${ready.length} ảnh: ${errMsg}${badFiles.length?' | Ảnh không mở được: '+badFiles.join(' | '):''}${overloadHint}`, 'err');
-  } else {
-    let msg = `Đã đọc được ${rowsAdded} dòng từ ${ready.length} ảnh (1 lượt gọi`+(lastUsage&&lastUsage.input?`, ${fmtVN(lastUsage.input)} token vào + ${fmtVN(lastUsage.output)} token ra`:'')+(lastModelUsed && lastModelUsed!==settings.model?`, dùng mô hình dự phòng ${lastModelUsed}`:'')+(retried?', phải đọc lại 1 lần':'')+`) — vui lòng kiểm tra lại trước khi lưu.`+(dropped?` Đã bỏ ${dropped} dòng AI trả về nhưng trống hoặc lặp lại liên tiếp (có thể do AI tự bịa).`:'');
-    if(badFiles.length) msg += ` Ảnh không mở được: ${badFiles.join(' | ')}.`;
-    setStatus('process-status', msg, 'ok');
-    selectedFiles.filter(s=>s.state==='done').forEach(s=>URL.revokeObjectURL(s.url));
-    selectedFiles = selectedFiles.filter(s=>s.state!=='done');
-    renderThumbs();
+  const okCount = ready.filter(r=>r.s.state==='done').length;
+  let msg = `Đã đọc được ${rowsAdded} dòng từ ${okCount}/${ready.length} ảnh`
+    + (ready.length>1 ? ` (${perImage.join(', ')})` : '')
+    + (tokIn ? ` — ${fmtVN(tokIn)} token vào + ${fmtVN(tokOut)} token ra` : '')
+    + (lastModelUsed && lastModelUsed!==settings.model ? `, dùng mô hình dự phòng ${lastModelUsed}` : '')
+    + (retried ? `, ${retried} ảnh phải đọc lại` : '')
+    + '. Vui lòng kiểm tra lại trước khi lưu.'
+    + (dropped ? ` Đã bỏ ${dropped} dòng AI trả về nhưng trống hoặc lặp lại liên tiếp (có thể do AI tự bịa).` : '');
+  if(fails.length){
+    const all = fails.join(' | ');
+    const overloadHint = /quá tải|hết lượt dùng/.test(all) ? ' Nếu vẫn liên tục quá tải hoặc hết lượt miễn phí, thử đổi mô hình/nhà cung cấp khác trong Cài đặt hoặc chờ vài phút.' : '';
+    msg += ` LỖI: ${all}. Bấm "Đọc bằng AI" lại để chỉ đọc lại các ảnh lỗi.${overloadHint}`;
   }
+  if(badFiles.length) msg += ` Ảnh không mở được: ${badFiles.join(' | ')}.`;
+  setStatus('process-status', msg, fails.length||badFiles.length ? 'err' : 'ok');
+  selectedFiles.filter(s=>s.state==='done').forEach(s=>URL.revokeObjectURL(s.url));
+  selectedFiles = selectedFiles.filter(s=>s.state!=='done');
+  renderThumbs();
 }
 
 $('btn-load-paste').addEventListener('click', ()=>{
